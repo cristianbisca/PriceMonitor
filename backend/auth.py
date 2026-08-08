@@ -5,7 +5,7 @@ Authentication is disabled if either variable is not set.
 """
 
 import os
-import hashlib
+import hmac
 import base64
 import logging
 from typing import Callable
@@ -34,16 +34,14 @@ def is_auth_enabled():
 def verify_credentials(provided_username: str, provided_password: str) -> bool:
     """Verify provided credentials against environment variables."""
     expected_username, expected_password = get_credentials()
-    logger.info(f"Auth check: username='{provided_username}' vs '{expected_username}', password length={len(provided_password)} vs {len(expected_password)}, auth_enabled={is_auth_enabled()}")
     result = (
-        hashlib.compare_digest(
+        hmac.compare_digest(
             provided_username.encode(), expected_username.encode()
         )
-        and hashlib.compare_digest(
+        and hmac.compare_digest(
             provided_password.encode(), expected_password.encode()
         )
     )
-    logger.info(f"Auth result: {result}")
     return result
 
 
