@@ -215,9 +215,128 @@
         .health-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
         .health-ok { background: var(--accent-green); }
         .health-err { background: var(--accent-red); }
+
+        /* ===== Login Overlay ===== */
+        .login-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--bg-primary);
+            z-index: 9999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-overlay.active {
+            display: flex;
+        }
+
+        .login-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 40px 36px;
+            width: 90%;
+            max-width: 420px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            text-align: center;
+        }
+
+        .login-logo {
+            margin-bottom: 32px;
+        }
+
+        .login-logo-icon {
+            font-size: 3rem;
+            display: block;
+            margin-bottom: 12px;
+        }
+
+        .login-logo h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .login-logo h1 span {
+            color: var(--accent-blue);
+        }
+
+        .login-subtitle {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-top: 8px;
+        }
+
+        .login-form input[type="text"],
+        .login-form input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        .login-form input[type="text"]:focus,
+        .login-form input[type="password"]:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+        }
+
+        .login-form .btn {
+            width: 100%;
+            padding: 12px 20px;
+            font-size: 1rem;
+            justify-content: center;
+        }
+
+        .login-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid var(--accent-red);
+            border-radius: 8px;
+            padding: 10px 16px;
+            color: var(--accent-red);
+            font-size: 0.85rem;
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            .login-box {
+                margin: 16px;
+                padding: 28px 24px;
+            }
+        }
     </style>
 </head>
 <body>
+    <!-- Login Overlay -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-box">
+            <div class="login-logo">
+                <span class="login-logo-icon">📊</span>
+                <h1>Price <span>Monitor</span></h1>
+                <p class="login-subtitle">Authentication Required</p>
+            </div>
+            <form id="loginForm" class="login-form" onsubmit="return false;">
+                <div class="login-error" id="loginError"></div>
+                <input type="text" id="loginUser" placeholder="Username" autocomplete="username" required>
+                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
+                <button type="submit" class="btn btn-primary">Sign In</button>
+            </form>
+        </div>
+    </div>
+
     <div class="container">
         <!-- Toast Container -->
         <div class="toast-container" id="toastContainer"></div>
@@ -345,264 +464,383 @@
     </div>
 
     <script>
-        let products = [];
-        let currentProductId = null;
-        let priceChartInstance = null;
+        (async function() {
+            // ─── Authentication State ────────────────────────────────────────
+            let authRequired = false;
+            let authToken = null;
 
-        async function api(method, path, body = null) {
-            const opts = { method, headers: { 'Content-Type': 'application/json' } };
-            if (body) opts.body = JSON.stringify(body);
-            const res = await fetch(path, opts);
-            if (!res.ok) throw new Error(await res.text());
-            return res.status === 204 ? null : await res.json();
-        }
+            async function checkAuthStatus() {
+                try {
+                    const response = await fetch('/api/auth/status');
+                    const data = await response.json();
+                    authRequired = data.authRequired;
 
-        function showToast(message, type = 'info') {
-            const container = document.getElementById('toastContainer');
-            const toast = document.createElement('div');
-            toast.className = `toast toast-${type}`;
-            toast.textContent = message;
-            container.appendChild(toast);
-            setTimeout(() => toast.remove(), 4000);
-        }
-
-        async function loadProducts() {
-            try {
-                products = await api('GET', '/api/products');
-                renderProducts();
-                updateStats();
-            } catch (err) {
-                console.error(err);
-                showToast('Failed to load products', 'error');
+                    if (authRequired) {
+                        // Check for stored token
+                        authToken = sessionStorage.getItem('pm_token');
+                        if (authToken) {
+                            // Validate the token by making a test request
+                            const valid = await validateToken();
+                            if (!valid) {
+                                sessionStorage.removeItem('pm_token');
+                                authToken = null;
+                                showLoginOverlay();
+                                return false;
+                            }
+                            hideLoginOverlay();
+                            return true;
+                        } else {
+                            showLoginOverlay();
+                            return false;
+                        }
+                    } else {
+                        hideLoginOverlay();
+                        return true;
+                    }
+                } catch (err) {
+                    console.error('Auth check failed:', err);
+                    return true; // Allow access on error to avoid lockout
+                }
             }
-        }
 
-        function updateStats() {
-            const total = products.length;
-            const active = products.filter(p => p.enabled).length;
-            const checks = products.reduce((sum, p) => sum + (p.price_count || 0), 0);
-            const drops = products.reduce((sum, p) => sum + (p.min_price && p.current_price === p.min_price ? 1 : 0), 0);
-            document.getElementById('totalProducts').textContent = total;
-            document.getElementById('activeProducts').textContent = active;
-            document.getElementById('totalChecks').textContent = checks;
-            document.getElementById('priceDrops').textContent = drops;
-        }
+            async function validateToken() {
+                try {
+                    const response = await fetch('/api/health', {
+                        headers: { 'X-PM-Token': authToken }
+                    });
+                    return response.ok;
+                } catch (err) {
+                    return false;
+                }
+            }
 
-        function renderProducts() {
-            const container = document.getElementById('productsTableContainer');
-            if (products.length === 0) {
-                container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
+            function showLoginOverlay() {
+                document.getElementById('loginOverlay').classList.add('active');
+            }
+
+            function hideLoginOverlay() {
+                document.getElementById('loginOverlay').classList.remove('active');
+            }
+
+            async function handleLogin(e) {
+                if (e) e.preventDefault();
+                const user = document.getElementById('loginUser').value;
+                const password = document.getElementById('loginPassword').value;
+                const errorEl = document.getElementById('loginError');
+
+                try {
+                    const response = await fetch('/api/auth/login', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user, password })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        authToken = data.token;
+                        sessionStorage.setItem('pm_token', authToken);
+                        errorEl.style.display = 'none';
+                        hideLoginOverlay();
+                        // Initialize the app after login
+                        initApp();
+                    } else {
+                        errorEl.textContent = data.error || 'Login failed';
+                        errorEl.style.display = 'block';
+                    }
+                } catch (err) {
+                    errorEl.textContent = 'Connection error. Please try again.';
+                    errorEl.style.display = 'block';
+                }
+            }
+
+            // Attach login form handler
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+
+            // ─── API Helper with Auth ────────────────────────────────────────
+            window.api = async function(method, path, body) {
+                const opts = { method, headers: { 'Content-Type': 'application/json' } };
+                if (body) opts.body = JSON.stringify(body);
+                if (authToken) {
+                    opts.headers['X-PM-Token'] = authToken;
+                }
+                const res = await fetch(path, opts);
+                if (!res.ok) {
+                    const text = await res.text();
+                    throw new Error(text);
+                }
+                return res.status === 204 ? null : await res.json();
+            };
+
+            // ─── Wait for auth before proceeding ─────────────────────────────
+            const authOk = await checkAuthStatus();
+            if (!authOk) {
+                // Wait for user to login
                 return;
             }
-            let html = '<table><thead><tr><th>Product</th><th>Status</th><th>Current Price</th><th>Min Price</th><th>Avg Price</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
-            products.forEach(p => {
-                html += '<tr>';
-                html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div></td>';
-                html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                html += '<td>' + (p.current_price ? '<span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span>' : '<span style="color:var(--text-muted)">No data</span>') + '</td>';
-                html += '<td>' + (p.min_price ? '<span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>' : '-') + '</td>';
-                html += '<td>' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : '-') + '</td>';
-                html += '<td>' + (p.price_count || 0) + '</td>';
-                html += '<td class="actions-cell"><button class="btn btn-success btn-sm" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-danger btn-sm" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
-                html += '</tr>';
-            });
-            html += '</tbody></table>';
-            container.innerHTML = html;
-        }
 
-        function formatPrice(price, currency = 'RON') {
-            return parseFloat(price).toFixed(2) + ' ' + currency;
-        }
+            // Auth passed - initialize the app
+            initApp();
+        })();
 
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
+        // ─── App Initialization (called after auth) ─────────────────────────
+        function initApp() {
+            let products = [];
+            let currentProductId = null;
+            let priceChartInstance = null;
 
-        function openAddModal() { document.getElementById('addModal').classList.add('active'); }
-        function closeAddModal() { document.getElementById('addModal').classList.remove('active'); }
-        function toggleCustomSelector() {
-            document.getElementById('customSelectorGroup').style.display = document.getElementById('scraperType').value === 'custom' ? 'block' : 'none';
-        }
+            // Get the authToken from sessionStorage (set by auth module)
+            const authToken = sessionStorage.getItem('pm_token');
 
-        async function addProduct(e) {
-            e.preventDefault();
-            try {
-                const product = await api('POST', '/api/products', {
-                    name: document.getElementById('productName').value,
-                    url: document.getElementById('productUrl').value,
-                    currency: document.getElementById('productCurrency').value,
-                    scraper_type: document.getElementById('scraperType').value,
-                    custom_selector: document.getElementById('customSelector').value || null,
-                });
-                showToast('Product "' + product.name + '" added successfully!', 'success');
-                closeAddModal();
-                e.target.reset();
-                loadProducts();
-            } catch (err) {
-                showToast(err.message || 'Failed to add product', 'error');
+            function showToast(message, type) {
+                type = type || 'info';
+                const container = document.getElementById('toastContainer');
+                const toast = document.createElement('div');
+                toast.className = 'toast toast-' + type;
+                toast.textContent = message;
+                container.appendChild(toast);
+                setTimeout(() => toast.remove(), 4000);
             }
-        }
 
-        async function toggleProduct(id, enabled) {
-            try {
-                await api('PUT', '/api/products/' + id, { enabled });
-                showToast(enabled ? 'Product enabled' : 'Product paused', 'info');
-                loadProducts();
-            } catch (err) {
-                showToast('Failed to update product', 'error');
-            }
-        }
-
-        async function deleteProduct(id) {
-            if (!confirm('Are you sure you want to delete this product?')) return;
-            try {
-                await api('DELETE', '/api/products/' + id);
-                showToast('Product deleted', 'success');
-                loadProducts();
-            } catch (err) {
-                showToast('Failed to delete product', 'error');
-            }
-        }
-
-        async function checkProduct(id) {
-            showToast('Checking price...', 'info');
-            try {
-                const result = await api('POST', '/api/products/' + id + '/check');
-                if (result.success) {
-                    showToast(result.is_minimum ? 'New minimum price found!' : 'Price: ' + formatPrice(result.price), 'success');
-                } else {
-                    showToast(result.message || 'Could not extract price', 'error');
+            async function loadProducts() {
+                try {
+                    products = await window.api('GET', '/api/products');
+                    renderProducts();
+                    updateStats();
+                } catch (err) {
+                    console.error(err);
+                    showToast('Failed to load products', 'error');
                 }
-                loadProducts();
-            } catch (err) {
-                showToast('Failed to check price', 'error');
             }
-        }
 
-        async function checkAllPrices() {
-            showToast('Checking all products...', 'info');
-            try {
-                const result = await api('POST', '/api/check-all');
-                showToast('Checked ' + result.successful + '/' + result.total + ' products', 'success');
-                loadProducts();
-            } catch (err) {
-                showToast('Failed to check prices', 'error');
+            function updateStats() {
+                const total = products.length;
+                const active = products.filter(p => p.enabled).length;
+                const checks = products.reduce((sum, p) => sum + (p.price_count || 0), 0);
+                const drops = products.reduce((sum, p) => sum + (p.min_price && p.current_price === p.min_price ? 1 : 0), 0);
+                document.getElementById('totalProducts').textContent = total;
+                document.getElementById('activeProducts').textContent = active;
+                document.getElementById('totalChecks').textContent = checks;
+                document.getElementById('priceDrops').textContent = drops;
             }
-        }
 
-        async function showProductDetail(id) {
-            currentProductId = id;
-            document.getElementById('listView').classList.add('hidden');
-            document.getElementById('detailView').classList.add('active');
-            const product = products.find(p => p.id === id);
-            if (!product) return;
-            document.getElementById('detailName').textContent = product.name;
-            var urlEl = document.getElementById('detailUrl');
-            urlEl.textContent = product.url;
-            urlEl.href = product.url;
-            renderDetailStats(product);
-            await loadPriceHistory(id);
-        }
-
-        function renderDetailStats(p) {
-            document.getElementById('detailStats').innerHTML =
-                '<div class="stat-item"><div class="stat-label">Current Price</div><div class="stat-value" style="color:var(--accent-blue)">' + (p.current_price ? formatPrice(p.current_price, p.currency) : 'N/A') + '</div></div>' +
-                '<div class="stat-item"><div class="stat-label">Min Price</div><div class="stat-value" style="color:var(--accent-green)">' + (p.min_price ? formatPrice(p.min_price, p.currency) : 'N/A') + '</div></div>' +
-                '<div class="stat-item"><div class="stat-label">Max Price</div><div class="stat-value" style="color:var(--accent-red)">' + (p.max_price ? formatPrice(p.max_price, p.currency) : 'N/A') + '</div></div>' +
-                '<div class="stat-item"><div class="stat-label">Avg Price</div><div class="stat-value">' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : 'N/A') + '</div></div>' +
-                '<div class="stat-item"><div class="stat-label">Total Checks</div><div class="stat-value">' + (p.price_count || 0) + '</div></div>';
-        }
-
-        function showListView() {
-            document.getElementById('detailView').classList.remove('active');
-            document.getElementById('listView').classList.remove('hidden');
-            currentProductId = null;
-            if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
-        }
-
-        async function loadPriceHistory(id) {
-            try {
-                const history = await api('GET', '/api/products/' + id + '/prices/reverse');
-                if (history.length === 0) {
-                    document.getElementById('historyTableContainer').innerHTML = '<div class="empty-state"><h3>No price data yet</h3><p>Click "Check Now" to get the first price reading</p></div>';
+            function renderProducts() {
+                const container = document.getElementById('productsTableContainer');
+                if (products.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
                     return;
                 }
-                renderChart(history);
-                let html = '<table class="history-table"><thead><tr><th>Date</th><th>Price</th><th>Status</th></tr></thead><tbody>';
-                history.slice().reverse().forEach(entry => {
-                    var date = new Date(entry.checked_at).toLocaleString('ro-RO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-                    html += '<tr><td>' + date + '</td><td><strong>' + formatPrice(entry.price, entry.currency) + '</strong></td><td>' + (entry.is_minimum ? '<span class="min-badge">MINIMUM</span>' : '-') + '</td></tr>';
+                let html = '<table><thead><tr><th>Product</th><th>Status</th><th>Current Price</th><th>Min Price</th><th>Avg Price</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
+                products.forEach(p => {
+                    html += '<tr>';
+                    html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div></td>';
+                    html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
+                    html += '<td>' + (p.current_price ? '<span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span>' : '<span style="color:var(--text-muted)">No data</span>') + '</td>';
+                    html += '<td>' + (p.min_price ? '<span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>' : '-') + '</td>';
+                    html += '<td>' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : '-') + '</td>';
+                    html += '<td>' + (p.price_count || 0) + '</td>';
+                    html += '<td class="actions-cell"><button class="btn btn-success btn-sm" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-danger btn-sm" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
+                    html += '</tr>';
                 });
                 html += '</tbody></table>';
-                document.getElementById('historyTableContainer').innerHTML = html;
-            } catch (err) {
-                showToast('Failed to load price history', 'error');
+                container.innerHTML = html;
             }
-        }
 
-        function renderChart(history) {
-            const ctx = document.getElementById('priceChart').getContext('2d');
-            if (priceChartInstance) priceChartInstance.destroy();
-            const labels = history.map(e => new Date(e.checked_at));
-            const minPoints = history.filter(e => e.is_minimum).map(e => ({ x: new Date(e.checked_at), y: e.price }));
-            priceChartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        {
-                            label: 'Price',
-                            data: history.map((e, i) => ({ x: labels[i], y: e.price })),
-                            borderColor: '#3b82f6',
-                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            borderWidth: 2, fill: true, tension: 0.3,
-                            pointRadius: 4, pointBackgroundColor: '#3b82f6',
-                        },
-                        {
-                            label: 'Minimum Price',
-                            data: minPoints,
-                            borderColor: 'transparent', backgroundColor: '#22c55e',
-                            pointRadius: 10, pointStyle: 'star', pointHoverRadius: 12,
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true, maintainAspectRatio: false,
-                    interaction: { intersect: false, mode: 'index' },
-                    plugins: {
-                        legend: { labels: { color: '#94a3b8', usePointStyle: true } },
-                        tooltip: {
-                            backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8',
-                            borderColor: '#334155', borderWidth: 1, padding: 12,
-                            callbacks: { label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' RON'; } }
-                        }
-                    },
-                    scales: {
-                        x: { type: 'time', time: { tooltipFormat: 'dd MMM yyyy HH:mm', displayFormats: { day: 'dd MMM', hour: 'dd MMM HH:mm' } }, grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } },
-                        y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', callback: function(v) { return v.toFixed(2); } } }
-                    }
+            function formatPrice(price, currency) {
+                currency = currency || 'RON';
+                return parseFloat(price).toFixed(2) + ' ' + currency;
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            window.openAddModal = function() { document.getElementById('addModal').classList.add('active'); };
+            window.closeAddModal = function() { document.getElementById('addModal').classList.remove('active'); };
+            window.toggleCustomSelector = function() {
+                document.getElementById('customSelectorGroup').style.display = document.getElementById('scraperType').value === 'custom' ? 'block' : 'none';
+            };
+
+            window.addProduct = async function(e) {
+                e.preventDefault();
+                try {
+                    const product = await window.api('POST', '/api/products', {
+                        name: document.getElementById('productName').value,
+                        url: document.getElementById('productUrl').value,
+                        currency: document.getElementById('productCurrency').value,
+                        scraper_type: document.getElementById('scraperType').value,
+                        custom_selector: document.getElementById('customSelector').value || null,
+                    });
+                    showToast('Product "' + product.name + '" added successfully!', 'success');
+                    closeAddModal();
+                    e.target.reset();
+                    loadProducts();
+                } catch (err) {
+                    showToast(err.message || 'Failed to add product', 'error');
                 }
-            });
-        }
+            };
 
-        async function checkCurrentProduct() {
-            if (!currentProductId) return;
-            await checkProduct(currentProductId);
-            await loadPriceHistory(currentProductId);
-            const product = await api('GET', '/api/products/' + currentProductId);
-            renderDetailStats(product);
-        }
+            window.toggleProduct = async function(id, enabled) {
+                try {
+                    await window.api('PUT', '/api/products/' + id, { enabled });
+                    showToast(enabled ? 'Product enabled' : 'Product paused', 'info');
+                    loadProducts();
+                } catch (err) {
+                    showToast('Failed to update product', 'error');
+                }
+            };
 
-        async function deleteCurrentProduct() {
-            if (!currentProductId) return;
-            await deleteProduct(currentProductId);
-            showListView();
-        }
+            window.deleteProduct = async function(id) {
+                if (!confirm('Are you sure you want to delete this product?')) return;
+                try {
+                    await window.api('DELETE', '/api/products/' + id);
+                    showToast('Product deleted', 'success');
+                    loadProducts();
+                } catch (err) {
+                    showToast('Failed to delete product', 'error');
+                }
+            };
 
-        setInterval(loadProducts, 60000);
-        loadProducts();
+            window.checkProduct = async function(id) {
+                showToast('Checking price...', 'info');
+                try {
+                    const result = await window.api('POST', '/api/products/' + id + '/check');
+                    if (result.success) {
+                        showToast(result.is_minimum ? 'New minimum price found!' : 'Price: ' + formatPrice(result.price), 'success');
+                    } else {
+                        showToast(result.message || 'Could not extract price', 'error');
+                    }
+                    loadProducts();
+                } catch (err) {
+                    showToast('Failed to check price', 'error');
+                }
+            };
+
+            window.checkAllPrices = async function() {
+                showToast('Checking all products...', 'info');
+                try {
+                    const result = await window.api('POST', '/api/check-all');
+                    showToast('Checked ' + result.successful + '/' + result.total + ' products', 'success');
+                    loadProducts();
+                } catch (err) {
+                    showToast('Failed to check prices', 'error');
+                }
+            };
+
+            window.showProductDetail = async function(id) {
+                currentProductId = id;
+                document.getElementById('listView').classList.add('hidden');
+                document.getElementById('detailView').classList.add('active');
+                const product = products.find(p => p.id === id);
+                if (!product) return;
+                document.getElementById('detailName').textContent = product.name;
+                var urlEl = document.getElementById('detailUrl');
+                urlEl.textContent = product.url;
+                urlEl.href = product.url;
+                renderDetailStats(product);
+                await loadPriceHistory(id);
+            };
+
+            function renderDetailStats(p) {
+                document.getElementById('detailStats').innerHTML =
+                    '<div class="stat-item"><div class="stat-label">Current Price</div><div class="stat-value" style="color:var(--accent-blue)">' + (p.current_price ? formatPrice(p.current_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Min Price</div><div class="stat-value" style="color:var(--accent-green)">' + (p.min_price ? formatPrice(p.min_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Max Price</div><div class="stat-value" style="color:var(--accent-red)">' + (p.max_price ? formatPrice(p.max_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Avg Price</div><div class="stat-value">' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Total Checks</div><div class="stat-value">' + (p.price_count || 0) + '</div></div>';
+            }
+
+            window.showListView = function() {
+                document.getElementById('detailView').classList.remove('active');
+                document.getElementById('listView').classList.remove('hidden');
+                currentProductId = null;
+                if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
+            };
+
+            async function loadPriceHistory(id) {
+                try {
+                    const history = await window.api('GET', '/api/products/' + id + '/prices/reverse');
+                    if (history.length === 0) {
+                        document.getElementById('historyTableContainer').innerHTML = '<div class="empty-state"><h3>No price data yet</h3><p>Click "Check Now" to get the first price reading</p></div>';
+                        return;
+                    }
+                    renderChart(history);
+                    let html = '<table class="history-table"><thead><tr><th>Date</th><th>Price</th><th>Status</th></tr></thead><tbody>';
+                    history.slice().reverse().forEach(entry => {
+                        var date = new Date(entry.checked_at).toLocaleString('ro-RO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        html += '<tr><td>' + date + '</td><td><strong>' + formatPrice(entry.price, entry.currency) + '</strong></td><td>' + (entry.is_minimum ? '<span class="min-badge">MINIMUM</span>' : '-') + '</td></tr>';
+                    });
+                    html += '</tbody></table>';
+                    document.getElementById('historyTableContainer').innerHTML = html;
+                } catch (err) {
+                    showToast('Failed to load price history', 'error');
+                }
+            }
+
+            function renderChart(history) {
+                const ctx = document.getElementById('priceChart').getContext('2d');
+                if (priceChartInstance) priceChartInstance.destroy();
+                const labels = history.map(e => new Date(e.checked_at));
+                const minPoints = history.filter(e => e.is_minimum).map(e => ({ x: new Date(e.checked_at), y: e.price }));
+                priceChartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            {
+                                label: 'Price',
+                                data: history.map((e, i) => ({ x: labels[i], y: e.price })),
+                                borderColor: '#3b82f6',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                borderWidth: 2, fill: true, tension: 0.3,
+                                pointRadius: 4, pointBackgroundColor: '#3b82f6',
+                            },
+                            {
+                                label: 'Minimum Price',
+                                data: minPoints,
+                                borderColor: 'transparent', backgroundColor: '#22c55e',
+                                pointRadius: 10, pointStyle: 'star', pointHoverRadius: 12,
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        interaction: { intersect: false, mode: 'index' },
+                        plugins: {
+                            legend: { labels: { color: '#94a3b8', usePointStyle: true } },
+                            tooltip: {
+                                backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8',
+                                borderColor: '#334155', borderWidth: 1, padding: 12,
+                                callbacks: { label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' RON'; } }
+                            }
+                        },
+                        scales: {
+                            x: { type: 'time', time: { tooltipFormat: 'dd MMM yyyy HH:mm', displayFormats: { day: 'dd MMM', hour: 'dd MMM HH:mm' } }, grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } },
+                            y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', callback: function(v) { return v.toFixed(2); } } }
+                        }
+                    }
+                });
+            }
+
+            window.checkCurrentProduct = async function() {
+                if (!currentProductId) return;
+                await window.checkProduct(currentProductId);
+                await loadPriceHistory(currentProductId);
+                const product = await window.api('GET', '/api/products/' + currentProductId);
+                renderDetailStats(product);
+            };
+
+            window.deleteCurrentProduct = async function() {
+                if (!currentProductId) return;
+                await window.deleteProduct(currentProductId);
+                window.showListView();
+            };
+
+            setInterval(loadProducts, 60000);
+            loadProducts();
+        }
     </script>
 </body>
 </html>

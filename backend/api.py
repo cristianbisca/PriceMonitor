@@ -20,7 +20,7 @@ from price_checker import check_product_price, run_all_price_checks
 from graph_generator import generate_price_chart, get_price_statistics
 from telegram_notifier import test_notification, is_configured as telegram_is_configured
 from scheduler import init_scheduler, shutdown_scheduler
-from auth import AuthMiddleware
+from auth import AuthMiddleware, is_auth_enabled, generate_token, verify_credentials, get_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +120,45 @@ async def shutdown():
     """Cleanup on shutdown."""
     shutdown_scheduler()
     logger.info("Application shut down")
+
+
+# ============ Authentication ============
+
+@app.get("/api/auth/status")
+async def auth_status():
+    """Check if authentication is enabled. Public endpoint."""
+    return {"authRequired": is_auth_enabled()}
+
+
+class LoginRequest(BaseModel):
+    user: str = ""
+    password: str = ""
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    """Login endpoint - returns a token for session-based auth. Public endpoint."""
+    if not is_auth_enabled():
+        return JSONResponse(
+            status_code=405,
+            content={"error": "Authentication is not enabled"},
+        )
+
+    if not request.user or not request.password:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Invalid credentials"},
+        )
+
+    if verify_credentials(request.user, request.password):
+        expected_username, expected_password = get_credentials()
+        token = generate_token(expected_username, expected_password)
+        return {"success": True, "token": token}
+    else:
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Invalid credentials"},
+        )
 
 
 # ============ Health ============
