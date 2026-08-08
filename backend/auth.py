@@ -22,8 +22,8 @@ from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
-# Token validity: 24 hours in seconds
-TOKEN_TTL_SECONDS = 86400
+# Token validity: 7 days in seconds
+TOKEN_TTL_SECONDS = 604800
 
 
 def get_credentials():

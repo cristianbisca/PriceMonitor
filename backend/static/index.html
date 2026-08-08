@@ -477,12 +477,12 @@
 
                     if (authRequired) {
                         // Check for stored token
-                        authToken = sessionStorage.getItem('pm_token');
+                        authToken = localStorage.getItem('pm_token');
                         if (authToken) {
                             // Validate the token by making a test request
                             const valid = await validateToken();
                             if (!valid) {
-                                sessionStorage.removeItem('pm_token');
+                                localStorage.removeItem('pm_token');
                                 authToken = null;
                                 showLoginOverlay();
                                 return false;
@@ -539,7 +539,7 @@
 
                     if (data.success) {
                         authToken = data.token;
-                        sessionStorage.setItem('pm_token', authToken);
+                        localStorage.setItem('pm_token', authToken);
                         errorEl.style.display = 'none';
                         hideLoginOverlay();
                         // Initialize the app after login
@@ -589,8 +589,8 @@
             let currentProductId = null;
             let priceChartInstance = null;
 
-            // Get the authToken from sessionStorage (set by auth module)
-            const authToken = sessionStorage.getItem('pm_token');
+            // Get the authToken from localStorage (persists across sessions)
+            const authToken = localStorage.getItem('pm_token');
 
             function showToast(message, type) {
                 type = type || 'info';
