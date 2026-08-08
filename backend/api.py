@@ -20,6 +20,7 @@ from price_checker import check_product_price, run_all_price_checks
 from graph_generator import generate_price_chart, get_price_statistics
 from telegram_notifier import test_notification, is_configured as telegram_is_configured
 from scheduler import init_scheduler, shutdown_scheduler
+from auth import AuthMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add authentication middleware (after CORS so headers are included)
+app.add_middleware(AuthMiddleware)
 
 
 # ============ Pydantic Models ============

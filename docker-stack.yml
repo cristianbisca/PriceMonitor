@@ -29,6 +29,8 @@ services:
       - PRICE_CHECK_TIMES=${PRICE_CHECK_TIMES:-09:00,14:00}
       - PORT=4300
       - HOST=0.0.0.0
+      - APP_USERNAME=${APP_USERNAME:-admin}
+      - APP_PASSWORD=${APP_PASSWORD:-changeme}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - pricemonitor_data:/app/data
