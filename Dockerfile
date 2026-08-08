@@ -2,27 +2,20 @@
 # Price Monitor - Docker Image
 # ============================================
 
-# Build stage
-FROM python:3.12-slim AS builder
-
-WORKDIR /app
-
-# Install dependencies
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-# Final stage
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# System dependencies
+# Install system dependencies needed for matplotlib and building packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libfreetype6 \
+    libpng16-16 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from builder
-COPY --from=builder /install /usr/local
+# Copy and install Python dependencies
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY backend/ ./

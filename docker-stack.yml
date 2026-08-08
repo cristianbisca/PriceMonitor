@@ -15,11 +15,11 @@ version: '3.8'
 
 services:
   pricemonitor:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Or use a pre-built image from registry:
-    # image: your-registry/price-monitor:latest
+    image: ghcr.io/cristianbisca/price-monitor:latest
+    # To rebuild from source, uncomment build context instead:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
     ports:
       - published: ${PORT:-4300}
         target: 8000
