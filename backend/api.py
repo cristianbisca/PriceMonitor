@@ -18,7 +18,12 @@ from database import get_db, init_db, engine
 from models import Product, PriceEntry, AppSettings, Base
 from price_checker import check_product_price, run_all_price_checks
 from graph_generator import generate_price_chart, get_price_statistics
-from telegram_notifier import test_notification, is_configured as telegram_is_configured
+from telegram_notifier import (
+    test_notification,
+    is_configured as telegram_is_configured,
+    _log_configuration_status,
+    verify_telegram_connection,
+)
 from scheduler import init_scheduler, shutdown_scheduler
 from auth import AuthMiddleware, is_auth_enabled, generate_token, verify_credentials, get_credentials
 
@@ -109,6 +114,30 @@ async def startup():
     # Create tables
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created/verified")
+
+    # Log Telegram configuration status
+    _log_configuration_status()
+
+    # Verify Telegram bot token by calling getMe API
+    if telegram_is_configured():
+        logger.info("Verifying Telegram connection...")
+        verify_result = verify_telegram_connection()
+        if verify_result["token_valid"]:
+            bot_info = verify_result["bot_info"]
+            logger.info(
+                f"Telegram bot connected: {bot_info['first_name']} "
+                f"(@{bot_info.get('username', 'no username')}, ID: {bot_info['id']})"
+            )
+        else:
+            logger.warning(
+                f"Telegram connection verification failed: {verify_result.get('error')}. "
+                f"Notifications may not work. Check your TELEGRAM_BOT_TOKEN."
+            )
+    else:
+        logger.warning(
+            "Telegram notifications are NOT configured. "
+            "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables to enable them."
+        )
 
     # Initialize scheduler
     init_scheduler()
