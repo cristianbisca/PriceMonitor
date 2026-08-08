@@ -10,22 +10,21 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: price-monitor
-    ports:
-      - "${PORT:-4300}:8000"
+    network_mode: host
     environment:
       - TZ=${TZ:-Europe/Bucharest}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///data/price_monitor.db}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - PRICE_CHECK_TIMES=${PRICE_CHECK_TIMES:-09:00,14:00}
-      - PORT=8000
+      - PORT=4300
       - HOST=0.0.0.0
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - pricemonitor_data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:4300/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
