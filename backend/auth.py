@@ -6,10 +6,14 @@ Authentication is disabled if either variable is not set.
 
 import os
 import hashlib
+import base64
 import logging
+from typing import Callable
+
 from fastapi import Request, HTTPException
-from fastapi.responses import HTMLResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +34,17 @@ def is_auth_enabled():
 def verify_credentials(provided_username: str, provided_password: str) -> bool:
     """Verify provided credentials against environment variables."""
     expected_username, expected_password = get_credentials()
-    # Use constant-time comparison to prevent timing attacks
-    return (
-        hashlib.compare_digest(provided_username.encode(), expected_username.encode())
-        and hashlib.compare_digest(provided_password.encode(), expected_password.encode())
+    logger.info(f"Auth check: username='{provided_username}' vs '{expected_username}', password length={len(provided_password)} vs {len(expected_password)}, auth_enabled={is_auth_enabled()}")
+    result = (
+        hashlib.compare_digest(
+            provided_username.encode(), expected_username.encode()
+        )
+        and hashlib.compare_digest(
+            provided_password.encode(), expected_password.encode()
+        )
     )
+    logger.info(f"Auth result: {result}")
+    return result
 
 
 def parse_basic_auth(authorization: str) -> tuple:
@@ -42,8 +52,6 @@ def parse_basic_auth(authorization: str) -> tuple:
     try:
         if not authorization or not authorization.startswith("Basic "):
             return None, None
-
-        import base64
         encoded = authorization.split(" ", 1)[1]
         decoded = base64.b64decode(encoded).decode("utf-8")
         username, _, password = decoded.partition(":")
@@ -52,10 +60,21 @@ def parse_basic_auth(authorization: str) -> tuple:
         return None, None
 
 
+def _unauthorized_response() -> JSONResponse:
+    """Return a 401 response with WWW-Authenticate header."""
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Authentication required"},
+        headers={"WWW-Authenticate": 'Basic realm="Price Monitor", charset="UTF-8"'},
+    )
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """HTTP Basic Authentication middleware."""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ):
         # Skip auth if not enabled
         if not is_auth_enabled():
             return await call_next(request)
@@ -68,29 +87,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         authorization = request.headers.get("Authorization", "")
         username, password = parse_basic_auth(authorization)
 
-        # For API endpoints, require authentication
-        if request.url.path.startswith("/api/"):
-            if not verify_credentials(username or "", password or ""):
-                response = HTMLResponse(
-                    status_code=401,
-                    content="<h1>401 Unauthorized</h1><p>Authentication required.</p>",
-                    headers={"WWW-Authenticate": 'Basic realm="Price Monitor", charset="UTF-8"'},
-                )
-                return response
-
-        # For frontend pages, send 401 with WWW-Authenticate header to trigger browser login prompt
+        # Verify credentials
         if not verify_credentials(username or "", password or ""):
-            # Check if it's an HTML request (not API)
-            accept = request.headers.get("Accept", "")
-            if "text/html" in accept or not request.url.path.startswith("/api/"):
-                response = HTMLResponse(
-                    status_code=401,
-                    content="<h1>401 Unauthorized</h1><p>Authentication required.</p>",
-                    headers={"WWW-Authenticate": 'Basic realm="Price Monitor", charset="UTF-8"'},
-                )
-                return response
+            return _unauthorized_response()
 
-        return await call_next(request)
+        response = await call_next(request)
+        return response
 
 
 def require_auth(request: Request):
