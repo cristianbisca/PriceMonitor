@@ -31,6 +31,7 @@ services:
       - HOST=0.0.0.0
       - APP_USERNAME=${APP_USERNAME:-admin}
       - APP_PASSWORD=${APP_PASSWORD:-changeme}
+      - ENABLE_SIGNUP=${ENABLE_SIGNUP:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - pricemonitor_data:/app/data
