@@ -15,12 +15,9 @@ services:
       - TZ=${TZ:-Europe/Bucharest}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///data/price_monitor.db}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
       - PRICE_CHECK_TIMES=${PRICE_CHECK_TIMES:-09:00,14:00}
       - PORT=4300
       - HOST=0.0.0.0
-      - APP_USERNAME=${APP_USERNAME:-admin}
-      - APP_PASSWORD=${APP_PASSWORD:-changeme}
       - ENABLE_SIGNUP=${ENABLE_SIGNUP:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:

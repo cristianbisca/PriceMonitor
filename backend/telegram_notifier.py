@@ -115,8 +115,8 @@ def verify_telegram_connection() -> dict:
 
 
 def is_configured() -> bool:
-    """Check if Telegram notifications are configured."""
-    return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+    """Check if Telegram bot token is configured (chat ID is now per-user)."""
+    return bool(TELEGRAM_BOT_TOKEN)
 
 
 def send_message(chat_id: str, text: str, parse_mode: str = "HTML") -> bool:
