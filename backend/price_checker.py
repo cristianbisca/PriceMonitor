@@ -253,7 +253,7 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
             PriceEntry.product_id == product_id
         ).order_by(PriceEntry.price.asc()).first()
 
-        is_minimum = min_entry is None or price <= min_entry.price
+        is_minimum = min_entry is None or price < min_entry.price
 
         # Create price entry
         entry = PriceEntry(
