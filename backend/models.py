@@ -1,8 +1,21 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, create_engine
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, ForeignKey, create_engine, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime, timezone
 
 Base = declarative_base()
+
+
+class User(Base):
+    """Represents a registered user."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(100), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)  # SHA-256 hash of the password
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    products = relationship("Product", back_populates="user", cascade="all, delete-orphan")
 
 
 class Product(Base):
@@ -10,8 +23,9 @@ class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)  # User-defined or scraped product name
-    url = Column(String(2048), nullable=False, unique=True, index=True)
+    url = Column(String(2048), nullable=False, index=True)
     price_field = Column(String(100), nullable=True)  # Hint for which field contains price (e.g., "meta[property='product:price:amount']")
     currency = Column(String(10), default="RON")
     enabled = Column(Boolean, default=True)
@@ -23,7 +37,13 @@ class Product(Base):
     custom_selector = Column(String(255), nullable=True)  # CSS selector for custom price extraction
 
     # Relationships
+    user = relationship("User", back_populates="products")
     price_history = relationship("PriceEntry", back_populates="product", cascade="all, delete-orphan")
+
+    # URL must be unique per user
+    __table_args__ = (
+        UniqueConstraint("user_id", "url", name="uq_user_url"),
+    )
 
 
 class PriceEntry(Base):

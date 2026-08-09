@@ -1,24 +1,22 @@
 """
-Token-based Authentication system.
-Configurable via APP_USERNAME and APP_PASSWORD environment variables.
-Authentication is disabled if either variable is not set.
-
-Uses base64-encoded JSON tokens (similar to LocalNetworkDropper approach)
-for session-based authentication with a themed login UI.
+Multi-user Authentication system.
+Users are stored in the database with SHA-256 hashed passwords.
+Uses base64-encoded JSON tokens for session-based authentication.
 """
 
-import os
-import hmac
+import hashlib
 import base64
 import json
 import logging
 import time
-from typing import Callable, Optional
+from typing import Optional
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.types import ASGIApp
+
+from database import SessionLocal
+from models import User
 
 logger = logging.getLogger(__name__)
 
@@ -26,57 +24,47 @@ logger = logging.getLogger(__name__)
 TOKEN_TTL_SECONDS = 604800
 
 
-def get_credentials():
-    """Get username and password from environment variables."""
-    username = os.environ.get("APP_USERNAME", "")
-    password = os.environ.get("APP_PASSWORD", "")
-    return username, password
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
-def is_auth_enabled():
-    """Check if authentication is enabled (both credentials must be set)."""
-    username, password = get_credentials()
-    return bool(username and password)
-
-
-def verify_credentials(provided_username: str, provided_password: str) -> bool:
-    """Verify provided credentials against environment variables."""
-    expected_username, expected_password = get_credentials()
-    result = (
-        hmac.compare_digest(
-            provided_username.encode(), expected_username.encode()
-        )
-        and hmac.compare_digest(
-            provided_password.encode(), expected_password.encode()
-        )
-    )
-    return result
-
-
-def generate_token(username: str, password: str) -> str:
-    """Generate a base64-encoded JSON token with timestamp."""
+def generate_token(user_id: int, username: str) -> str:
+    """Generate a base64-encoded JSON token with timestamp and user info."""
     token_data = {
-        "user": username,
-        "pass": password,
+        "user_id": user_id,
+        "username": username,
         "ts": time.time()
     }
     return base64.b64encode(json.dumps(token_data).encode()).decode()
 
 
-def validate_token(token: str) -> bool:
-    """Validate a token by decoding and checking credentials and expiry."""
+def validate_token(token: str) -> Optional[dict]:
+    """Validate a token by decoding and checking expiry. Returns user info dict or None."""
     if not token:
-        return False
+        return None
     try:
         decoded = json.loads(base64.b64decode(token).decode())
-        expected_username, expected_password = get_credentials()
-        user_valid = hmac.compare_digest(decoded.get("user", ""), expected_username)
-        pass_valid = hmac.compare_digest(decoded.get("pass", ""), expected_password)
+        user_id = decoded.get("user_id")
+        username = decoded.get("username")
         timestamp = decoded.get("ts", 0)
         not_expired = (time.time() - timestamp) < TOKEN_TTL_SECONDS
-        return user_valid and pass_valid and not_expired
+
+        if not user_id or not username or not not_expired:
+            return None
+
+        # Verify user still exists in database
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id, User.username == username).first()
+            if not user:
+                return None
+        finally:
+            db.close()
+
+        return {"user_id": user_id, "username": username}
     except Exception:
-        return False
+        return None
 
 
 def extract_token_from_request(request: Request) -> Optional[str]:
@@ -94,16 +82,12 @@ def extract_token_from_request(request: Request) -> Optional[str]:
     return None
 
 
-def authenticate_request(request: Request) -> bool:
-    """Check if a request is authenticated via token."""
-    if not is_auth_enabled():
-        return True
-
+def get_current_user(request: Request) -> Optional[dict]:
+    """Get the current user from the request token. Returns user info dict or None."""
     token = extract_token_from_request(request)
     if token:
         return validate_token(token)
-
-    return False
+    return None
 
 
 def _unauthorized_response() -> JSONResponse:
@@ -119,6 +103,7 @@ PUBLIC_PATHS = {
     "/api/health",
     "/api/auth/status",
     "/api/auth/login",
+    "/api/auth/register",
 }
 
 # Paths that serve static assets for the login page
@@ -131,7 +116,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Token-based Authentication middleware.
     
     Allows access to:
-    - Public API endpoints (/api/health, /api/auth/status, /api/auth/login)
+    - Public API endpoints (/api/health, /api/auth/status, /api/auth/login, /api/auth/register)
     - Static files (needed for login page rendering)
     - Root path (serves the frontend which handles auth UI)
     
@@ -142,10 +127,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ):
-        # Skip auth if not enabled
-        if not is_auth_enabled():
-            return await call_next(request)
-
         path = request.url.path
 
         # Allow public endpoints without auth
@@ -162,23 +143,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         # Require token authentication for API endpoints
-        token = extract_token_from_request(request)
-        if not validate_token(token or ""):
+        user_info = get_current_user(request)
+        if not user_info:
             return _unauthorized_response()
+
+        # Store user info on request state for downstream use
+        request.state.user = user_info
 
         response = await call_next(request)
         return response
 
 
-def require_auth(request: Request):
-    """Dependency to check authentication for API endpoints (fallback)."""
-    if not is_auth_enabled():
-        return True
-
-    token = extract_token_from_request(request)
-    if not validate_token(token or ""):
+def require_auth(request: Request) -> dict:
+    """Dependency to check authentication for API endpoints and return user info."""
+    user_info = get_current_user(request)
+    if not user_info:
         raise HTTPException(
             status_code=401,
             detail="Authentication required",
         )
-    return True
+    return user_info

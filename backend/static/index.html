@@ -216,8 +216,8 @@
         .health-ok { background: var(--accent-green); }
         .health-err { background: var(--accent-red); }
 
-        /* ===== Login Overlay ===== */
-        .login-overlay {
+        /* ===== Auth Overlay (Login/Register) ===== */
+        .auth-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             background: var(--bg-primary);
             z-index: 9999;
@@ -225,11 +225,11 @@
             align-items: center;
             justify-content: center;
         }
-        .login-overlay.active {
+        .auth-overlay.active {
             display: flex;
         }
 
-        .login-box {
+        .auth-box {
             background: var(--bg-secondary);
             border: 1px solid var(--border-color);
             border-radius: 16px;
@@ -240,42 +240,79 @@
             text-align: center;
         }
 
-        .login-logo {
+        .auth-logo {
             margin-bottom: 32px;
         }
 
-        .login-logo-icon {
+        .auth-logo-icon {
             font-size: 3rem;
             display: block;
             margin-bottom: 12px;
         }
 
-        .login-logo h1 {
+        .auth-logo h1 {
             font-size: 2rem;
             font-weight: 700;
             margin-bottom: 4px;
         }
 
-        .login-logo h1 span {
+        .auth-logo h1 span {
             color: var(--accent-blue);
         }
 
-        .login-subtitle {
+        .auth-subtitle {
             font-size: 0.8rem;
             color: var(--text-muted);
             letter-spacing: 1px;
             text-transform: uppercase;
         }
 
-        .login-form {
+        /* Tab switcher */
+        .auth-tabs {
+            display: flex;
+            margin-bottom: 24px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .auth-tab {
+            flex: 1;
+            padding: 10px 16px;
+            background: var(--bg-primary);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        .auth-tab.active {
+            background: var(--accent-blue);
+            color: white;
+        }
+
+        .auth-tab:hover:not(.active) {
+            background: var(--bg-hover);
+        }
+
+        .auth-form-container {
+            min-height: 200px;
+        }
+
+        .auth-form {
             display: flex;
             flex-direction: column;
             gap: 14px;
-            margin-top: 8px;
         }
 
-        .login-form input[type="text"],
-        .login-form input[type="password"] {
+        .auth-form.hidden {
+            display: none;
+        }
+
+        .auth-form input[type="text"],
+        .auth-form input[type="password"] {
             width: 100%;
             padding: 12px 16px;
             border-radius: 8px;
@@ -287,32 +324,47 @@
             transition: border-color 0.2s;
         }
 
-        .login-form input[type="text"]:focus,
-        .login-form input[type="password"]:focus {
+        .auth-form input[type="text"]:focus,
+        .auth-form input[type="password"]:focus {
             outline: none;
             border-color: var(--accent-blue);
             box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
         }
 
-        .login-form .btn {
+        .auth-form .btn {
             width: 100%;
             padding: 12px 20px;
             font-size: 1rem;
             justify-content: center;
         }
 
-        .login-error {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid var(--accent-red);
+        .auth-message {
             border-radius: 8px;
             padding: 10px 16px;
-            color: var(--accent-red);
             font-size: 0.85rem;
             display: none;
         }
 
+        .auth-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid var(--accent-red);
+            color: var(--accent-red);
+        }
+
+        .auth-success {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid var(--accent-green);
+            color: var(--accent-green);
+        }
+
+        .password-hint {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: -4px;
+        }
+
         @media (max-width: 480px) {
-            .login-box {
+            .auth-box {
                 margin: 16px;
                 padding: 28px 24px;
             }
@@ -320,20 +372,42 @@
     </style>
 </head>
 <body>
-    <!-- Login Overlay -->
-    <div class="login-overlay" id="loginOverlay">
-        <div class="login-box">
-            <div class="login-logo">
-                <span class="login-logo-icon">📊</span>
+    <!-- Auth Overlay (Login + Register) -->
+    <div class="auth-overlay" id="authOverlay">
+        <div class="auth-box">
+            <div class="auth-logo">
+                <span class="auth-logo-icon">📊</span>
                 <h1>Price <span>Monitor</span></h1>
-                <p class="login-subtitle">Authentication Required</p>
+                <p class="auth-subtitle">Authentication Required</p>
             </div>
-            <form id="loginForm" class="login-form" onsubmit="return false;">
-                <div class="login-error" id="loginError"></div>
-                <input type="text" id="loginUser" placeholder="Username" autocomplete="username" required>
-                <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
-                <button type="submit" class="btn btn-primary">Sign In</button>
-            </form>
+
+            <!-- Tab Switcher -->
+            <div class="auth-tabs">
+                <button class="auth-tab active" id="loginTab" onclick="switchAuthTab('login')">Sign In</button>
+                <button class="auth-tab" id="registerTab" onclick="switchAuthTab('register')">Sign Up</button>
+            </div>
+
+            <!-- Message Display -->
+            <div class="auth-message auth-error" id="authMessage"></div>
+
+            <!-- Login Form -->
+            <div class="auth-form-container">
+                <form id="loginForm" class="auth-form" onsubmit="return false;">
+                    <input type="text" id="loginUsername" placeholder="Username" autocomplete="username" required>
+                    <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
+                    <button type="submit" class="btn btn-primary">Sign In</button>
+                </form>
+
+                <!-- Register Form -->
+                <form id="registerForm" class="auth-form hidden" onsubmit="return false;">
+                    <input type="text" id="registerUsername" placeholder="Choose a username" autocomplete="username" required>
+                    <div class="password-hint">Letters, numbers, and underscores only (min 3 characters)</div>
+                    <input type="password" id="registerPassword" placeholder="Choose a password" autocomplete="new-password" required>
+                    <div class="password-hint">Minimum 4 characters</div>
+                    <input type="password" id="registerPasswordConfirm" placeholder="Confirm password" autocomplete="new-password" required>
+                    <button type="submit" class="btn btn-primary">Create Account</button>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -484,17 +558,17 @@
                             if (!valid) {
                                 localStorage.removeItem('pm_token');
                                 authToken = null;
-                                showLoginOverlay();
+                                showAuthOverlay();
                                 return false;
                             }
-                            hideLoginOverlay();
+                            hideAuthOverlay();
                             return true;
                         } else {
-                            showLoginOverlay();
+                            showAuthOverlay();
                             return false;
                         }
                     } else {
-                        hideLoginOverlay();
+                        hideAuthOverlay();
                         return true;
                     }
                 } catch (err) {
@@ -514,25 +588,60 @@
                 }
             }
 
-            function showLoginOverlay() {
-                document.getElementById('loginOverlay').classList.add('active');
+            function showAuthOverlay() {
+                document.getElementById('authOverlay').classList.add('active');
             }
 
-            function hideLoginOverlay() {
-                document.getElementById('loginOverlay').classList.remove('active');
+            function hideAuthOverlay() {
+                document.getElementById('authOverlay').classList.remove('active');
+                clearAuthMessage();
             }
 
+            // ─── Auth Tab Switching ──────────────────────────────────────────
+            window.switchAuthTab = function(tab) {
+                const loginForm = document.getElementById('loginForm');
+                const registerForm = document.getElementById('registerForm');
+                const loginTab = document.getElementById('loginTab');
+                const registerTab = document.getElementById('registerTab');
+
+                clearAuthMessage();
+
+                if (tab === 'login') {
+                    loginForm.classList.remove('hidden');
+                    registerForm.classList.add('hidden');
+                    loginTab.classList.add('active');
+                    registerTab.classList.remove('active');
+                } else {
+                    loginForm.classList.add('hidden');
+                    registerForm.classList.remove('hidden');
+                    loginTab.classList.remove('active');
+                    registerTab.classList.add('active');
+                }
+            };
+
+            function showAuthMessage(text, type) {
+                const el = document.getElementById('authMessage');
+                el.textContent = text;
+                el.className = 'auth-message ' + (type === 'error' ? 'auth-error' : 'auth-success');
+                el.style.display = 'block';
+            }
+
+            function clearAuthMessage() {
+                const el = document.getElementById('authMessage');
+                el.style.display = 'none';
+            }
+
+            // ─── Login Handler ──────────────────────────────────────────────
             async function handleLogin(e) {
                 if (e) e.preventDefault();
-                const user = document.getElementById('loginUser').value;
+                const username = document.getElementById('loginUsername').value;
                 const password = document.getElementById('loginPassword').value;
-                const errorEl = document.getElementById('loginError');
 
                 try {
                     const response = await fetch('/api/auth/login', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ user, password })
+                        body: JSON.stringify({ username, password })
                     });
 
                     const data = await response.json();
@@ -540,22 +649,58 @@
                     if (data.success) {
                         authToken = data.token;
                         localStorage.setItem('pm_token', authToken);
-                        errorEl.style.display = 'none';
-                        hideLoginOverlay();
-                        // Initialize the app after login
+                        hideAuthOverlay();
                         initApp();
                     } else {
-                        errorEl.textContent = data.error || 'Login failed';
-                        errorEl.style.display = 'block';
+                        showAuthMessage(data.error || 'Invalid credentials', 'error');
                     }
                 } catch (err) {
-                    errorEl.textContent = 'Connection error. Please try again.';
-                    errorEl.style.display = 'block';
+                    showAuthMessage('Connection error. Please try again.', 'error');
                 }
             }
 
-            // Attach login form handler
+            // ─── Register Handler ───────────────────────────────────────────
+            async function handleRegister(e) {
+                if (e) e.preventDefault();
+                const username = document.getElementById('registerUsername').value;
+                const password = document.getElementById('registerPassword').value;
+                const confirm = document.getElementById('registerPasswordConfirm').value;
+
+                // Client-side validation
+                if (password !== confirm) {
+                    showAuthMessage('Passwords do not match', 'error');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/auth/register', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+
+                    const data = await response.json();
+
+                    if (data.success) {
+                        // Auto-login after registration
+                        authToken = data.token;
+                        localStorage.setItem('pm_token', authToken);
+                        showAuthMessage('Account created! Logging in...', 'success');
+                        setTimeout(() => {
+                            hideAuthOverlay();
+                            initApp();
+                        }, 800);
+                    } else {
+                        showAuthMessage(data.error || 'Registration failed', 'error');
+                    }
+                } catch (err) {
+                    showAuthMessage('Connection error. Please try again.', 'error');
+                }
+            }
+
+            // Attach form handlers
             document.getElementById('loginForm').addEventListener('submit', handleLogin);
+            document.getElementById('registerForm').addEventListener('submit', handleRegister);
 
             // ─── API Helper with Auth ────────────────────────────────────────
             window.api = async function(method, path, body) {
@@ -566,6 +711,13 @@
                 }
                 const res = await fetch(path, opts);
                 if (!res.ok) {
+                    // If 401, token may be expired - redirect to login
+                    if (res.status === 401) {
+                        localStorage.removeItem('pm_token');
+                        authToken = null;
+                        showAuthOverlay();
+                        throw new Error('Session expired. Please log in again.');
+                    }
                     const text = await res.text();
                     throw new Error(text);
                 }
@@ -575,7 +727,7 @@
             // ─── Wait for auth before proceeding ─────────────────────────────
             const authOk = await checkAuthStatus();
             if (!authOk) {
-                // Wait for user to login
+                // Wait for user to login or register
                 return;
             }
 

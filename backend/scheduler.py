@@ -110,9 +110,30 @@ def _send_notifications_for_entry(product_id: int, entry: PriceEntry):
 
 
 def scheduled_price_check():
-    """Scheduled job that checks all product prices and sends notifications."""
-    logger.info("=== Scheduled price check started ===")
-    results = run_all_price_checks()
+    """Scheduled job that checks all enabled products for ALL users and sends notifications.
+    
+    This is a global scheduler - it checks every user's products regardless of who triggered it.
+    """
+    logger.info("=== Scheduled price check started (checking all users' products) ===")
+
+    db = SessionLocal()
+    try:
+        # Query ALL enabled products across all users
+        products = db.query(Product).filter(Product.enabled == True).all()
+        logger.info(f"Running price checks for {len(products)} enabled products (all users)")
+    finally:
+        db.close()
+
+    results = []
+    for product in products:
+        entry = check_product_price(product.id)
+        results.append({
+            "product_id": product.id,
+            "name": product.name,
+            "success": entry is not None,
+            "price": entry.price if entry else None,
+            "is_minimum": entry.is_minimum if entry else False,
+        })
 
     for result in results:
         if result["success"]:
