@@ -35,6 +35,9 @@ def _convert_to_local_time(dt, tz=None):
 
     Handles both naive and aware datetimes. If the datetime is already in UTC,
     it will be converted to the target timezone. If naive, it's assumed to be UTC.
+    
+    Returns a NAIVE datetime in the target timezone (tzinfo stripped) so that
+    matplotlib displays it correctly without applying its own UTC conversion.
     """
     if tz is None:
         tz = _get_default_timezone()
@@ -43,7 +46,11 @@ def _convert_to_local_time(dt, tz=None):
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
 
-    return dt.astimezone(tz)
+    local_dt = dt.astimezone(tz)
+    
+    # Strip timezone info so matplotlib treats it as a plain wall-clock time
+    # and does NOT apply its own UTC conversion on top.
+    return local_dt.replace(tzinfo=None)
 
 
 def generate_price_chart(

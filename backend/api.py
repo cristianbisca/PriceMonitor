@@ -2,17 +2,29 @@
 FastAPI application with all API endpoints.
 """
 
+import json
 import logging
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """JSON encoder that ensures all datetimes include UTC timezone info."""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            # Ensure aware datetime in UTC
+            if obj.tzinfo is None:
+                obj = obj.replace(tzinfo=timezone.utc)
+            return obj.isoformat()
+        return super().default(obj)
 
 from database import get_db, init_db, engine, SessionLocal
 from models import Product, PriceEntry, AppSettings, Base, User
@@ -98,6 +110,18 @@ class ProductResponse(BaseModel):
         from_attributes = True
 
 
+def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Ensure a datetime has UTC timezone info.
+
+    SQLAlchemy with SQLite strips tzinfo when reading back, returning naive datetimes.
+    Since we always store UTC timestamps, treat naive ones as UTC so the frontend
+    can display them correctly in the user's local timezone.
+    """
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class PriceEntryResponse(BaseModel):
     id: int
     product_id: int
@@ -106,8 +130,12 @@ class PriceEntryResponse(BaseModel):
     checked_at: datetime
     is_minimum: bool
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}
+
+    @field_validator("checked_at", mode="before")
+    @classmethod
+    def ensure_checked_at_utc(cls, v):
+        return _ensure_utc(v)
 
 
 class ProductDetailResponse(ProductResponse):
