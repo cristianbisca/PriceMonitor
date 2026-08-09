@@ -101,6 +101,7 @@ def _unauthorized_response() -> JSONResponse:
 # Paths that never require authentication
 PUBLIC_PATHS = {
     "/api/health",
+    "/api/config/timezone",
     "/api/auth/status",
     "/api/auth/login",
     "/api/auth/logout",

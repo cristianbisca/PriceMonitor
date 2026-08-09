@@ -1220,10 +1220,10 @@ async function loadPriceHistory(id) {
                                 time: {
                                     timezone: window.appTimezone || 'Europe/Bucharest',
                                     tooltipFormat: 'dd MMM yyyy HH:mm',
-                                    displayFormats: { day: 'dd MMM', hour: 'dd MMM HH:mm' }
+                                    displayFormats: { minute: 'HH:mm', hour: 'dd MMM HH:mm', day: 'dd MMM', week: 'dd MMM', month: 'MMM yyyy' }
                                 },
                                 grid: { color: 'rgba(51, 65, 85, 0.3)' },
-                                ticks: { color: '#94a3b8' }
+                                ticks: { color: '#94a3b8', maxTicksLimit: 10, maxRotation: 45 }
                             },
                             y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', callback: function(v) { return v.toFixed(2); } } }
                         }
