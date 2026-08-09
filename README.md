@@ -14,7 +14,7 @@ A web application that monitors price changes for products across different e-co
 - **PWA Support** — Installable on Android with home screen icons
 - **Dark Theme UI** — Modern responsive web interface
 - **Sign-Up Control** — Admin can disable new registrations via `ENABLE_SIGNUP` env variable
-- **Docker Deployment** — Ready for Portainer stack deployment or docker-compose
+- **Docker Deployment** — Ready for Portainer or docker-compose
 
 ## 🏗 Architecture
 
@@ -33,8 +33,7 @@ A web application that monitors price changes for products across different e-co
 │   └── static/
 │       └── index.html      # Frontend SPA (Chart.js, vanilla JS, PWA manifest)
 ├── Dockerfile              # Single-stage Docker build
-├── docker-compose.yml      # Local development compose file
-├── docker-stack.yml        # Portainer Swarm stack file
+├── docker-compose.yml      # Docker Compose (local dev & Portainer deployment)
 ├── .env.example            # Environment variables template
 └── README.md
 ```
@@ -121,29 +120,16 @@ Each user configures their own Telegram notifications through the web interface:
 
 ## 🐳 Portainer Deployment
 
-### Option 1: Git Repository (Recommended)
-
 1. Push your code to a GitHub repository
 2. In Portainer, go to **Stacks → Add stack**
 3. Fill in:
    - **Name:** `price-monitor`
-   - **Type:** Swarm (or Standalone)
    - **Web/Git:** Select "Git repository"
    - **Repository URL:** Your GitHub repo URL
    - **Reference:** `main` (or your branch)
-   - **Compose file:** `docker-stack.yml`
+   - **Compose file:** `docker-compose.yml`
 4. Add environment variables in the **Advanced** section or via env_file
 5. Click **Deploy the stack**
-
-### Option 2: Pre-built Image
-
-1. Build and push the image to a registry:
-   ```bash
-   docker build -t your-registry/price-monitor:latest .
-   docker push your-registry/price-monitor:latest
-   ```
-2. In `docker-stack.yml`, uncomment the `image:` line and set your registry URL
-3. Deploy via Portainer as above
 
 ## 🔌 API Endpoints
 
