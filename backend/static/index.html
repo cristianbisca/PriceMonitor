@@ -422,6 +422,7 @@
                 <span id="healthStatus"><span class="health-dot health-ok"></span>Online</span>
                 <button class="btn btn-secondary btn-sm" onclick="checkAllPrices()">🔄 Check All Prices</button>
                 <button class="btn btn-primary" onclick="openAddModal()">+ Add Product</button>
+                <button class="btn btn-danger btn-sm" id="signOutBtn" onclick="handleSignOut()" style="display:none;">Sign Out</button>
             </div>
         </header>
 
@@ -542,12 +543,17 @@
             // ─── Authentication State ────────────────────────────────────────
             let authRequired = false;
             let authToken = null;
+            let signupEnabled = true;
 
             async function checkAuthStatus() {
                 try {
                     const response = await fetch('/api/auth/status');
                     const data = await response.json();
                     authRequired = data.authRequired;
+                    signupEnabled = data.signupEnabled !== false;
+
+                    // Update sign-up tab/button based on server config
+                    updateSignupUI();
 
                     if (authRequired) {
                         // Check for stored token
@@ -562,6 +568,7 @@
                                 return false;
                             }
                             hideAuthOverlay();
+                            showSignOutButton();
                             return true;
                         } else {
                             showAuthOverlay();
@@ -574,6 +581,40 @@
                 } catch (err) {
                     console.error('Auth check failed:', err);
                     return true; // Allow access on error to avoid lockout
+                }
+            }
+
+            function showSignOutButton() {
+                document.getElementById('signOutBtn').style.display = 'inline-flex';
+            }
+
+            function hideSignOutButton() {
+                document.getElementById('signOutBtn').style.display = 'none';
+            }
+
+            window.handleSignOut = async function() {
+                // Clear local token immediately
+                localStorage.removeItem('pm_token');
+                authToken = null;
+                hideSignOutButton();
+
+                // Call backend logout (best-effort)
+                try {
+                    await fetch('/api/auth/logout', { method: 'POST' });
+                } catch (err) {
+                    console.error('Logout API call failed:', err);
+                }
+
+                // Show the auth overlay
+                showAuthOverlay();
+            };
+
+            function updateSignupUI() {
+                const registerTab = document.getElementById('registerTab');
+                if (!signupEnabled) {
+                    registerTab.style.display = 'none';
+                } else {
+                    registerTab.style.display = '';
                 }
             }
 
@@ -650,6 +691,7 @@
                         authToken = data.token;
                         localStorage.setItem('pm_token', authToken);
                         hideAuthOverlay();
+                        showSignOutButton();
                         initApp();
                     } else {
                         showAuthMessage(data.error || 'Invalid credentials', 'error');
@@ -688,6 +730,7 @@
                         showAuthMessage('Account created! Logging in...', 'success');
                         setTimeout(() => {
                             hideAuthOverlay();
+                            showSignOutButton();
                             initApp();
                         }, 800);
                     } else {

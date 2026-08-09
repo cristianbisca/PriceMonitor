@@ -27,6 +27,8 @@ from telegram_notifier import (
 from scheduler import init_scheduler, shutdown_scheduler
 from auth import AuthMiddleware, hash_password, generate_token, get_current_user
 
+import os
+
 logger = logging.getLogger(__name__)
 
 # Create the app
@@ -173,13 +175,25 @@ async def shutdown():
 
 @app.get("/api/auth/status")
 async def auth_status():
-    """Check if authentication is enabled. Always required in multi-user mode."""
-    return {"authRequired": True}
+    """Check if authentication is enabled and whether sign-up is allowed."""
+    signup_enabled = os.getenv("ENABLE_SIGNUP", "true").lower() not in ("false", "0", "")
+    return {
+        "authRequired": True,
+        "signupEnabled": signup_enabled,
+    }
 
 
 @app.post("/api/auth/register")
 async def register(request: RegisterRequest):
-    """Register a new user. Public endpoint."""
+    """Register a new user. Public endpoint. Can be disabled via ENABLE_SIGNUP env var."""
+    # Check if sign-up is enabled
+    signup_enabled = os.getenv("ENABLE_SIGNUP", "true").lower() not in ("false", "0", "")
+    if not signup_enabled:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Sign up is currently disabled"},
+        )
+
     db = SessionLocal()
     try:
         # Check if username already exists
@@ -243,6 +257,12 @@ async def login(request: LoginRequest):
             )
     finally:
         db.close()
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    """Logout endpoint. Client-side token is invalidated by removing it from localStorage."""
+    return {"success": True}
 
 
 @app.get("/api/auth/me")
