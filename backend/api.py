@@ -16,6 +16,11 @@ from sqlalchemy import func
 
 from database import get_db, init_db, engine, SessionLocal
 from models import Product, PriceEntry, AppSettings, Base, User
+
+
+class TelegramSettingsRequest(BaseModel):
+    telegram_chat_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    telegram_notifications_enabled: Optional[bool] = None
 from price_checker import check_product_price, run_all_price_checks
 from graph_generator import generate_price_chart, get_price_statistics
 from telegram_notifier import (
@@ -131,9 +136,23 @@ class LoginRequest(BaseModel):
 @app.on_event("startup")
 async def startup():
     """Initialize database and scheduler on startup."""
+    from sqlalchemy import inspect, text
+
     # Create tables
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created/verified")
+
+    # Auto-migrate: add telegram columns to users table if missing
+    inspector = inspect(engine)
+    if "users" in inspector.get_table_names():
+        existing_cols = {col["name"] for col in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "telegram_chat_id" not in existing_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN telegram_chat_id VARCHAR(100)"))
+                logger.info("Added column telegram_chat_id to users table")
+            if "telegram_notifications_enabled" not in existing_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN telegram_notifications_enabled BOOLEAN DEFAULT 0"))
+                logger.info("Added column telegram_notifications_enabled to users table")
 
     # Log Telegram configuration status
     _log_configuration_status()
@@ -677,19 +696,100 @@ async def get_price_statistics_endpoint(product_id: int, request: Request, db: S
     return stats
 
 
-# ============ Telegram ============
+# ============ Telegram (Per-User Settings) ============
+
+@app.get("/api/telegram/settings")
+async def get_telegram_settings(request: Request):
+    """Get current user's Telegram notification settings."""
+    user = get_user_from_request(request)
+    user_id = user["user_id"]
+
+    db = SessionLocal()
+    try:
+        user_obj = db.query(User).filter(User.id == user_id).first()
+        return {
+            "telegram_chat_id": user_obj.telegram_chat_id if user_obj else "",
+            "telegram_notifications_enabled": user_obj.telegram_notifications_enabled if user_obj else False,
+            "bot_configured": telegram_is_configured(),
+        }
+    finally:
+        db.close()
+
+
+@app.put("/api/telegram/settings")
+async def update_telegram_settings(request: Request):
+    """Update current user's Telegram notification settings."""
+    user = get_user_from_request(request)
+    user_id = user["user_id"]
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    db = SessionLocal()
+    try:
+        user_obj = db.query(User).filter(User.id == user_id).first()
+        if not user_obj:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        if "telegram_chat_id" in body:
+            chat_id = body["telegram_chat_id"]
+            # Validate chat ID format (numeric, may start with - for groups)
+            if chat_id is not None and chat_id != "":
+                cleaned = chat_id.strip()
+                if not cleaned.lstrip("-").isdigit():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Chat ID must be a numeric value (e.g., 123456789 or -1001234567890)"
+                    )
+                user_obj.telegram_chat_id = cleaned
+            else:
+                user_obj.telegram_chat_id = None
+
+        if "telegram_notifications_enabled" in body:
+            user_obj.telegram_notifications_enabled = bool(body["telegram_notifications_enabled"])
+
+        db.commit()
+        db.refresh(user_obj)
+
+        return {
+            "success": True,
+            "telegram_chat_id": user_obj.telegram_chat_id,
+            "telegram_notifications_enabled": user_obj.telegram_notifications_enabled,
+        }
+    finally:
+        db.close()
+
 
 @app.post("/api/telegram/test")
-async def test_telegram():
-    """Send a test Telegram notification."""
-    if not telegram_is_configured():
-        raise HTTPException(status_code=400, detail="Telegram is not configured")
+async def test_telegram(request: Request):
+    """Send a test Telegram notification to the current user's chat ID."""
+    user = get_user_from_request(request)
+    user_id = user["user_id"]
 
-    success = test_notification()
-    return {
-        "success": success,
-        "message": "Test notification sent" if success else "Failed to send notification",
-    }
+    db = SessionLocal()
+    try:
+        user_obj = db.query(User).filter(User.id == user_id).first()
+        if not user_obj or not user_obj.telegram_chat_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Please set your Telegram Chat ID first in the settings"
+            )
+
+        if not telegram_is_configured():
+            raise HTTPException(
+                status_code=503,
+                detail="Telegram bot is not configured by the administrator (TELEGRAM_BOT_TOKEN missing)"
+            )
+
+        success = test_notification(chat_id=user_obj.telegram_chat_id)
+        return {
+            "success": success,
+            "message": "Test notification sent to your Telegram" if success else "Failed to send notification. Check your Chat ID.",
+        }
+    finally:
+        db.close()
 
 
 # ============ Frontend ============

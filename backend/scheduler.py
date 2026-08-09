@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from database import SessionLocal
-from models import Product, PriceEntry
+from models import Product, PriceEntry, User
 from price_checker import check_product_price, run_all_price_checks
 from telegram_notifier import (
     is_configured,
@@ -25,13 +25,31 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone=os.getenv("TZ", "Europe/Bucharest"))
 
 
-def _get_telegram_chat_ids() -> List[str]:
-    """Get list of Telegram chat IDs from environment or settings."""
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    if chat_id:
-        # Support multiple chat IDs separated by commas
-        return [cid.strip() for cid in chat_id.split(",") if cid.strip()]
-    return []
+def _get_user_chat_ids_for_product(product_id: int) -> List[str]:
+    """Get Telegram chat IDs for users who have this product and notifications enabled.
+
+    Falls back to global TELEGRAM_CHAT_ID env var if no users have per-user settings configured.
+    """
+    db = SessionLocal()
+    try:
+        # Get the product to find its owner
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return []
+
+        # Get the product owner's Telegram settings
+        user = db.query(User).filter(User.id == product.user_id).first()
+        if user and user.telegram_notifications_enabled and user.telegram_chat_id:
+            return [user.telegram_chat_id]
+
+        # Fallback: use global TELEGRAM_CHAT_ID from env for backward compatibility
+        chat_id_env = os.getenv("TELEGRAM_CHAT_ID", "")
+        if chat_id_env:
+            return [cid.strip() for cid in chat_id_env.split(",") if cid.strip()]
+
+        return []
+    finally:
+        db.close()
 
 
 def _send_notifications_for_entry(product_id: int, entry: PriceEntry):
@@ -46,8 +64,9 @@ def _send_notifications_for_entry(product_id: int, entry: PriceEntry):
         if not product:
             return
 
-        chat_ids = _get_telegram_chat_ids()
+        chat_ids = _get_user_chat_ids_for_product(product_id)
         if not chat_ids:
+            logger.info(f"No Telegram chat IDs configured for product {product_id} (user {product.user_id})")
             return
 
         # Get all price entries for this product to determine notification type

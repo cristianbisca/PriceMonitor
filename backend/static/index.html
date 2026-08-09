@@ -216,6 +216,35 @@
         .health-ok { background: var(--accent-green); }
         .health-err { background: var(--accent-red); }
 
+        /* ===== Settings View ===== */
+        .settings-view { display: none; }
+        .settings-view.active { display: block; }
+
+        .settings-card {
+            background: var(--bg-card); border-radius: 12px; padding: 32px;
+            box-shadow: var(--shadow); border: 1px solid var(--border-color);
+            max-width: 600px; margin-bottom: 24px;
+        }
+        .settings-card h2 { font-size: 1.3rem; margin-bottom: 8px; }
+        .settings-card .description { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5; }
+
+        .setting-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 16px 0; border-bottom: 1px solid var(--border-color);
+        }
+        .setting-row:last-of-type { border-bottom: none; }
+        .setting-label h3 { font-size: 1rem; margin-bottom: 4px; }
+        .setting-label p { color: var(--text-muted); font-size: 0.85rem; }
+
+        .settings-actions { display: flex; gap: 12px; margin-top: 24px; }
+
+        .status-indicator {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 600;
+        }
+        .status-connected { background: rgba(34, 197, 94, 0.2); color: var(--accent-green); }
+        .status-disconnected { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); }
+
         /* ===== Auth Overlay (Login/Register) ===== */
         .auth-overlay {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -420,6 +449,7 @@
             <h1>📊 Price <span>Monitor</span></h1>
             <div class="header-actions">
                 <span id="healthStatus"><span class="health-dot health-ok"></span>Online</span>
+                <button class="btn btn-secondary btn-sm" onclick="showSettingsView()">⚙️ Settings</button>
                 <button class="btn btn-secondary btn-sm" onclick="checkAllPrices()">🔄 Check All Prices</button>
                 <button class="btn btn-primary" onclick="openAddModal()">+ Add Product</button>
                 <button class="btn btn-danger btn-sm" id="signOutBtn" onclick="handleSignOut()" style="display:none;">Sign Out</button>
@@ -460,6 +490,66 @@
                 <div id="productsTableContainer">
                     <div class="loading"><div class="spinner"></div><br>Loading products...</div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Settings View -->
+        <div class="settings-view" id="settingsView">
+            <button class="btn btn-secondary" onclick="showListView()" style="margin-bottom: 20px;">← Back to Products</button>
+
+            <div class="settings-card">
+                <h2>🔔 Telegram Notifications</h2>
+                <p class="description">Configure your personal Telegram notification settings. You'll receive price drop alerts and new minimum price notifications directly in Telegram.</p>
+
+                <!-- Bot Status -->
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <h3>Bot Status</h3>
+                        <p id="botStatusText">Checking...</p>
+                    </div>
+                    <span id="botStatusIndicator" class="status-indicator status-disconnected">Unknown</span>
+                </div>
+
+                <!-- Enable Notifications Toggle -->
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <h3>Enable Notifications</h3>
+                        <p>Receive price alerts via Telegram when products drop in price</p>
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="telegramEnabledToggle" onchange="saveTelegramSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- Chat ID Input -->
+                <div class="setting-row" style="align-items: flex-start;">
+                    <div class="setting-label" style="flex: 1; margin-right: 20px;">
+                        <h3>Telegram Chat ID</h3>
+                        <p>Your unique Telegram chat ID. Find it by messaging @userinfobot on Telegram.</p>
+                    </div>
+                    <input type="text" id="telegramChatIdInput" placeholder="e.g., 123456789"
+                           style="width: 220px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-size: 0.95rem;"
+                           oninput="saveTelegramSettings()">
+                </div>
+
+                <!-- Actions -->
+                <div class="settings-actions">
+                    <button class="btn btn-success" onclick="testTelegramNotification()" id="testTelegramBtn">
+                        📱 Send Test Notification
+                    </button>
+                </div>
+            </div>
+
+            <div class="settings-card">
+                <h2>ℹ️ How to get your Chat ID</h2>
+                <p class="description" style="margin-bottom: 0;">
+                    1. Open Telegram and search for <strong>@userinfobot</strong><br>
+                    2. Send any message to the bot (e.g., "/start")<br>
+                    3. The bot will reply with your Chat ID - it's a number like <code style="background: var(--bg-primary); padding: 2px 6px; border-radius: 4px;">123456789</code><br>
+                    4. Paste that number into the "Telegram Chat ID" field above<br>
+                    5. Enable notifications and click "Send Test Notification" to verify it works
+                </p>
             </div>
         </div>
 
@@ -948,10 +1038,106 @@
             }
 
             window.showListView = function() {
-                document.getElementById('detailView').classList.remove('active');
+                hideAllViews();
                 document.getElementById('listView').classList.remove('hidden');
                 currentProductId = null;
                 if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
+            };
+
+            function hideAllViews() {
+                document.getElementById('detailView').classList.remove('active');
+                document.getElementById('listView').classList.remove('hidden');
+                document.getElementById('listView').style.display = '';
+                document.getElementById('settingsView').classList.remove('active');
+            }
+
+            // ─── Telegram Settings ──────────────────────────────────────────
+            let telegramSettingsLoaded = false;
+
+            window.showSettingsView = async function() {
+                hideAllViews();
+                document.getElementById('listView').style.display = 'none';
+                document.getElementById('settingsView').classList.add('active');
+                await loadTelegramSettings();
+            };
+
+            async function loadTelegramSettings() {
+                if (telegramSettingsLoaded) return;
+                try {
+                    const settings = await window.api('GET', '/api/telegram/settings');
+                    document.getElementById('telegramChatIdInput').value = settings.telegram_chat_id || '';
+                    document.getElementById('telegramEnabledToggle').checked = settings.telegram_notifications_enabled || false;
+
+                    // Update bot status indicator
+                    var indicator = document.getElementById('botStatusIndicator');
+                    var statusText = document.getElementById('botStatusText');
+                    if (settings.bot_configured) {
+                        indicator.className = 'status-indicator status-connected';
+                        indicator.textContent = 'Connected';
+                        statusText.textContent = 'Telegram bot is configured by administrator';
+                    } else {
+                        indicator.className = 'status-indicator status-disconnected';
+                        indicator.textContent = 'Not Configured';
+                        statusText.textContent = 'Bot token not set - ask admin to configure TELEGRAM_BOT_TOKEN';
+                    }
+
+                    telegramSettingsLoaded = true;
+                } catch (err) {
+                    showToast('Failed to load Telegram settings: ' + err.message, 'error');
+                }
+            }
+
+            let saveTimeout = null;
+
+            window.saveTelegramSettings = async function() {
+                var chatId = document.getElementById('telegramChatIdInput').value.trim();
+                var enabled = document.getElementById('telegramEnabledToggle').checked;
+
+                // Debounce saves on input change
+                if (saveTimeout) clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(async function() {
+                    try {
+                        await window.api('PUT', '/api/telegram/settings', {
+                            telegram_chat_id: chatId || null,
+                            telegram_notifications_enabled: enabled
+                        });
+                        showToast('Telegram settings saved', 'success');
+                    } catch (err) {
+                        showToast('Failed to save settings: ' + err.message, 'error');
+                    }
+                }, 500);
+            };
+
+            window.testTelegramNotification = async function() {
+                var chatId = document.getElementById('telegramChatIdInput').value.trim();
+                if (!chatId) {
+                    showToast('Please enter your Telegram Chat ID first', 'error');
+                    return;
+                }
+
+                var btn = document.getElementById('testTelegramBtn');
+                btn.disabled = true;
+                btn.textContent = '⏳ Sending...';
+
+                try {
+                    // Ensure chat id is saved before testing
+                    await window.api('PUT', '/api/telegram/settings', {
+                        telegram_chat_id: chatId,
+                        telegram_notifications_enabled: document.getElementById('telegramEnabledToggle').checked
+                    });
+
+                    var result = await window.api('POST', '/api/telegram/test');
+                    if (result.success) {
+                        showToast(result.message || 'Test notification sent!', 'success');
+                    } else {
+                        showToast(result.message || 'Failed to send test notification', 'error');
+                    }
+                } catch (err) {
+                    showToast('Test failed: ' + err.message, 'error');
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '📱 Send Test Notification';
+                }
             };
 
             async function loadPriceHistory(id) {

@@ -14,6 +14,10 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)  # SHA-256 hash of the password
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # Telegram notification settings (per-user)
+    telegram_chat_id = Column(String(100), nullable=True)  # User's Telegram chat/group ID
+    telegram_notifications_enabled = Column(Boolean, default=False)  # Whether user wants notifications
+
     # Relationships
     products = relationship("Product", back_populates="user", cascade="all, delete-orphan")
 
