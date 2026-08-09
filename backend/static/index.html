@@ -630,6 +630,21 @@
 
     <script>
         (async function() {
+            // ─── Global Config ───────────────────────────────────────────────
+            window.appTimezone = 'Europe/Bucharest'; // Fallback, will be overridden by server
+
+            async function loadServerTimezone() {
+                try {
+                    const res = await fetch('/api/config/timezone');
+                    if (res.ok) {
+                        const data = await res.json();
+                        window.appTimezone = data.timezone || 'Europe/Bucharest';
+                    }
+                } catch (err) {
+                    console.warn('Failed to load server timezone, using default:', err);
+                }
+            }
+
             // ─── Authentication State ────────────────────────────────────────
             let authRequired = false;
             let authToken = null;
@@ -857,7 +872,8 @@
                 return res.status === 204 ? null : await res.json();
             };
 
-            // ─── Wait for auth before proceeding ─────────────────────────────
+            // ─── Load server config then wait for auth ────────────────────────
+            await loadServerTimezone();
             const authOk = await checkAuthStatus();
             if (!authOk) {
                 // Wait for user to login or register
@@ -1140,7 +1156,7 @@
                 }
             };
 
-            async function loadPriceHistory(id) {
+async function loadPriceHistory(id) {
                 try {
                     const history = await window.api('GET', '/api/products/' + id + '/prices/reverse');
                     if (history.length === 0) {
@@ -1150,7 +1166,8 @@
                     renderChart(history);
                     let html = '<table class="history-table"><thead><tr><th>Date</th><th>Price</th><th>Status</th></tr></thead><tbody>';
                     history.slice().reverse().forEach(entry => {
-                        var date = new Date(entry.checked_at).toLocaleString('ro-RO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        var tz = window.appTimezone || 'Europe/Bucharest';
+                        var date = new Date(entry.checked_at).toLocaleString('ro-RO', { timeZone: tz, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
                         html += '<tr><td>' + date + '</td><td><strong>' + formatPrice(entry.price, entry.currency) + '</strong></td><td>' + (entry.is_minimum ? '<span class="min-badge">MINIMUM</span>' : '-') + '</td></tr>';
                     });
                     html += '</tbody></table>';
@@ -1198,7 +1215,16 @@
                             }
                         },
                         scales: {
-                            x: { type: 'time', time: { tooltipFormat: 'dd MMM yyyy HH:mm', displayFormats: { day: 'dd MMM', hour: 'dd MMM HH:mm' } }, grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8' } },
+                            x: {
+                                type: 'time',
+                                time: {
+                                    timezone: window.appTimezone || 'Europe/Bucharest',
+                                    tooltipFormat: 'dd MMM yyyy HH:mm',
+                                    displayFormats: { day: 'dd MMM', hour: 'dd MMM HH:mm' }
+                                },
+                                grid: { color: 'rgba(51, 65, 85, 0.3)' },
+                                ticks: { color: '#94a3b8' }
+                            },
                             y: { grid: { color: 'rgba(51, 65, 85, 0.3)' }, ticks: { color: '#94a3b8', callback: function(v) { return v.toFixed(2); } } }
                         }
                     }

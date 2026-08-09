@@ -296,6 +296,13 @@ async def get_current_user_info(request: Request):
 
 # ============ Health ============
 
+@app.get("/api/config/timezone")
+async def get_timezone_config():
+    """Get the configured timezone for frontend display."""
+    tz_name = os.getenv("TZ", "Europe/Bucharest")
+    return {"timezone": tz_name}
+
+
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""

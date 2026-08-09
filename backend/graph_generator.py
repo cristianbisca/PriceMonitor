@@ -6,7 +6,7 @@ Generates charts as PNG images and returns them as base64 or files.
 import io
 import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 
 import matplotlib
@@ -14,8 +14,36 @@ matplotlib.use('Agg')  # Non-interactive backend for Docker
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.font_manager import FontProperties
+import pytz
+import os
 
 logger = logging.getLogger(__name__)
+
+
+def _get_default_timezone():
+    """Get the configured timezone from environment variable TZ, defaulting to Europe/Bucharest."""
+    tz_name = os.getenv('TZ', 'Europe/Bucharest')
+    try:
+        return pytz.timezone(tz_name)
+    except pytz.UnknownTimeZoneError:
+        logger.warning(f"Unknown timezone '{tz_name}', falling back to Europe/Bucharest")
+        return pytz.timezone('Europe/Bucharest')
+
+
+def _convert_to_local_time(dt, tz=None):
+    """Convert a datetime to the specified timezone (default: from TZ env var).
+
+    Handles both naive and aware datetimes. If the datetime is already in UTC,
+    it will be converted to the target timezone. If naive, it's assumed to be UTC.
+    """
+    if tz is None:
+        tz = _get_default_timezone()
+
+    # If datetime is naive (no timezone info), assume it's UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(tz)
 
 
 def generate_price_chart(
@@ -45,9 +73,14 @@ def generate_price_chart(
     # Sort by date
     sorted_data = sorted(price_history, key=lambda x: x['checked_at'])
 
-    dates = [entry['checked_at'] for entry in sorted_data]
+    # Convert UTC timestamps to local timezone (Europe/Bucharest)
+    dates = [_convert_to_local_time(entry['checked_at']) for entry in sorted_data]
     prices = [entry['price'] for entry in sorted_data]
     is_minimums = [entry.get('is_minimum', False) for entry in sorted_data]
+
+    # Use configured timezone for matplotlib date formatting
+    _tz = _get_default_timezone()
+    plt.rcParams['timezone'] = _tz.key
 
     # Find minimum price
     min_price = min(prices)
@@ -192,16 +225,18 @@ def generate_comparison_chart(
     for idx, product in enumerate(products_data):
         color = colors[idx % len(colors)]
         data = sorted(product['prices'], key=lambda x: x['checked_at'])
-        dates = [e['checked_at'] for e in data]
+        dates = [_convert_to_local_time(e['checked_at']) for e in data]
         prices = [e['price'] for e in data]
 
         ax.plot(dates, prices, color=color, linewidth=2, marker='o', markersize=3, label=product['name'])
+
+    # Set timezone for date formatting
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d %b', tz=_get_default_timezone()))
 
     ax.set_title('Price Comparison', fontsize=16, fontweight='bold', pad=20)
     ax.set_xlabel('Date', fontsize=12)
     ax.set_ylabel(f'Price ({currency})', fontsize=12)
 
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d %b'))
     fig.autofmt_xdate(rotation=45, ha='right')
 
     ax.grid(True, alpha=0.3)
