@@ -4,6 +4,7 @@ Supports multiple strategies for extracting prices.
 """
 
 import re
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -37,28 +38,46 @@ def extract_price_auto(html: str, url: str) -> Optional[float]:
     """
     Attempt to extract price using multiple strategies.
     Returns the price as a float or None if not found.
+
+    Strategy order is designed for reliability:
+    - URL-aware strategies first (embedded JSON matched by product ID from URL)
+    - Then data-testid (SPA test hooks that are usually accurate)
+    - Then JSON-LD with URL matching to pick the right variant
+    - Finally fallback strategies
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Strategy 1: Look for JSON-LD structured data (schema.org/Product)
-    price = _extract_jsonld_price(soup)
+    # Strategy 1: Embedded SSR JSON matched by product ID from URL (most reliable for SPAs like Notino)
+    price = _extract_embedded_json_price(html, url)
+    if price is not None:
+        logger.info(f"Extracted price from embedded JSON: {price}")
+        return price
+
+    # Strategy 2: data-testid attributes (SPAs use these for test automation)
+    price = _extract_testid_price(soup)
+    if price is not None:
+        logger.info(f"Extracted price from data-testid: {price}")
+        return price
+
+    # Strategy 3: JSON-LD structured data with URL matching (schema.org/Product)
+    price = _extract_jsonld_price(soup, url)
     if price is not None:
         logger.info(f"Extracted price from JSON-LD: {price}")
         return price
 
-    # Strategy 2: Look for meta tags with price info (Open Graph, Facebook)
+    # Strategy 4: Meta tags with price info (Open Graph, Facebook)
     price = _extract_meta_price(soup)
     if price is not None:
         logger.info(f"Extracted price from meta tags: {price}")
         return price
 
-    # Strategy 3: Look for common price-related CSS selectors
+    # Strategy 5: Common price-related CSS selectors
     price = _extract_selector_price(soup)
     if price is not None:
         logger.info(f"Extracted price from CSS selectors: {price}")
         return price
 
-    # Strategy 4: Look for price in microdata
+    # Strategy 6: Price in microdata
     price = _extract_microdata_price(soup)
     if price is not None:
         logger.info(f"Extracted price from microdata: {price}")
@@ -107,11 +126,23 @@ def _parse_price_string(price_str: str) -> Optional[float]:
         return None
 
 
-def _extract_jsonld_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price from JSON-LD structured data."""
+def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]:
+    """Extract price from JSON-LD structured data.
+    
+    When a URL is provided, attempts to match the Product @id against the URL
+    to select the correct variant when multiple products are present.
+    """
+    # Extract path portion of URL for matching (e.g., /jean-paul-gaultier/divine-...)
+    url_path = ""
+    if url:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        url_path = parsed.path.rstrip('/')
+    
+    candidates = []  # list of (matched_bool, price_float)
+    
     for script in soup.find_all('script', type='application/ld+json'):
         try:
-            import json
             data = json.loads(script.string)
 
             # Handle both single object and array of objects
@@ -123,30 +154,65 @@ def _extract_jsonld_price(soup: BeautifulSoup) -> Optional[float]:
                 continue
 
             for obj in objects:
+                price = None
+                matched_url = False
+                
                 # Look for offers with price
                 offers = obj.get('offers', {})
                 if isinstance(offers, dict) and 'price' in offers:
                     price = _parse_price_string(str(offers['price']))
-                    if price:
-                        return price
                 elif isinstance(offers, list):
                     for offer in offers:
                         if 'price' in offer:
                             price = _parse_price_string(str(offer['price']))
                             if price:
-                                return price
+                                break
 
                 # Look directly at the object for price (if it's a Product)
                 if '@type' in obj and 'Product' in str(obj.get('@type', '')):
-                    if 'offers' in obj and isinstance(obj['offers'], dict):
+                    if 'price' in obj and price is None:
+                        price = _parse_price_string(str(obj['price']))
+                    if 'offers' in obj and isinstance(obj['offers'], dict) and price is None:
                         price = _parse_price_string(str(obj['offers'].get('price')))
-                        if price:
-                            return price
+                    
+                    # Check URL matching via @id
+                    obj_id = obj.get('@id', '')
+                    if obj_id and url_path:
+                        # Normalize both for comparison
+                        obj_id_normalized = obj_id.rstrip('/')
+                        matched_url = (url_path in obj_id_normalized or 
+                                       obj_id_normalized in url_path or
+                                       _paths_match(obj_id, url))
+
+                if price:
+                    candidates.append((matched_url, price))
 
         except (json.JSONDecodeError, TypeError, KeyError):
             continue
 
+    # Prefer URL-matched candidate; otherwise return first found
+    for matched, price in candidates:
+        if matched:
+            return price
+    
+    if candidates:
+        return candidates[0][1]
+
     return None
+
+
+def _paths_match(obj_id: str, page_url: str) -> bool:
+    """Check if a JSON-LD @id URL matches the current page URL."""
+    from urllib.parse import urlparse
+    try:
+        id_parsed = urlparse(obj_id)
+        url_parsed = urlparse(page_url)
+        # Compare paths (normalize trailing slashes and query params)
+        id_path = id_parsed.path.rstrip('/')
+        url_path = url_parsed.path.rstrip('/')
+        return id_path == url_path or id_path in url_path or url_path in id_path
+    except Exception:
+        return False
 
 
 def _extract_meta_price(soup: BeautifulSoup) -> Optional[float]:
@@ -165,6 +231,137 @@ def _extract_meta_price(soup: BeautifulSoup) -> Optional[float]:
         if price:
             return price
 
+    return None
+
+
+def _extract_testid_price(soup: BeautifulSoup) -> Optional[float]:
+    """Extract price from elements with data-testid attributes.
+    
+    Many modern SPAs (Notino, etc.) use data-testid for test automation
+    which conveniently includes price elements like data-testid='pd-price'.
+    """
+    # Look for common price-related testids
+    price_testids = ['pd-price', 'price-variant', 'product-price', 'current-price']
+    
+    for testid in price_testids:
+        elem = soup.find(attrs={'data-testid': testid})
+        if elem:
+            # Check content attribute first (Notino uses content="625")
+            price_str = elem.get('content')
+            if price_str:
+                price = _parse_price_string(price_str)
+                if price:
+                    return price
+            # Then check text content
+            text = elem.get_text(strip=True)
+            if text:
+                price = _parse_price_string(text)
+                if price and price < 100000:
+                    return price
+
+    return None
+
+
+def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
+    """Extract price from embedded SSR JSON data in script tags.
+    
+    Sites like Notino embed product data as JSON in the HTML for hydration.
+    This looks for patterns like CatalogVariant:{id}.price.value in the payload.
+    """
+    try:
+        # Find the productId or variantId from URL to target the right variant
+        # e.g., /p-16192772/ -> 16192772
+        url_match = re.search(r'p-(\d+)', url)
+        product_id_from_url = url_match.group(1) if url_match else None
+        
+        # Also try to get productId from JSON-LD sku/gtin context
+        # Look for embedded JSON blocks that contain price data
+        for script_match in re.finditer(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
+            text = script_match.group(1)
+            
+            # Skip very small or very large scripts to avoid noise
+            if len(text) < 50 or '__typename' not in text:
+                continue
+            
+            # Try to extract JSON from the script
+            json_start = text.find('{')
+            if json_start == -1:
+                continue
+            
+            # Parse balanced braces
+            depth = 0
+            json_end = json_start
+            for i, c in enumerate(text[json_start:], json_start):
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        json_end = i + 1
+                        break
+            
+            try:
+                data = json.loads(text[json_start:json_end])
+            except json.JSONDecodeError:
+                continue
+            
+            # Strategy A: Look for CatalogVariant:{id}.price pattern (Notino)
+            if product_id_from_url:
+                variant_key = f"CatalogVariant:{product_id_from_url}"
+                if variant_key in data:
+                    variant_data = data[variant_key]
+                    if isinstance(variant_data, dict):
+                        price_obj = variant_data.get('price', {})
+                        if isinstance(price_obj, dict) and 'value' in price_obj:
+                            price = _parse_price_string(str(price_obj['value']))
+                            if price:
+                                return price
+            
+            # Strategy B: Recursive search for price objects with value+currency
+            price_found = _search_json_for_price(data)
+            if price_found:
+                return price_found
+
+    except Exception as e:
+        logger.debug(f"Embedded JSON price extraction failed: {e}")
+    
+    return None
+
+
+def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional[float]:
+    """Recursively search a parsed JSON object for price patterns.
+    
+    Looks for objects with 'value' and 'currency' keys (common SSR pattern),
+    or direct numeric 'price' fields.
+    """
+    if depth > max_depth:
+        return None
+    
+    if isinstance(obj, dict):
+        # Check for price object pattern: {"__typename":"Price","value":625,"currency":"RON"}
+        if 'value' in obj and 'currency' in obj:
+            value = _parse_price_string(str(obj['value']))
+            if value and value < 100000:
+                return value
+        
+        # Check for direct price key with numeric value
+        if 'price' in obj and isinstance(obj.get('price'), (int, float)):
+            price = float(obj['price'])
+            if 0 < price < 100000:
+                return price
+        
+        # Recurse into children
+        for key, val in obj.items():
+            result = _search_json_for_price(val, depth + 1, max_depth)
+            if result:
+                return result
+    
+    elif isinstance(obj, list):
+        for item in obj:
+            result = _search_json_for_price(item, depth + 1, max_depth)
+            if result:
+                return result
+    
     return None
 
 
