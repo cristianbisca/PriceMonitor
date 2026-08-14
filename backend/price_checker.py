@@ -264,47 +264,58 @@ def _extract_testid_price(soup: BeautifulSoup) -> Optional[float]:
 
 def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
     """Extract price from embedded SSR JSON data in script tags.
-    
+
     Sites like Notino embed product data as JSON in the HTML for hydration.
     This looks for patterns like CatalogVariant:{id}.price.value in the payload.
+    Handles Apollo state (__APOLLO_STATE__) and Next.js (__NEXT_DATA__) scripts.
     """
     try:
         # Find the productId or variantId from URL to target the right variant
         # e.g., /p-16192772/ -> 16192772
         url_match = re.search(r'p-(\d+)', url)
         product_id_from_url = url_match.group(1) if url_match else None
-        
-        # Also try to get productId from JSON-LD sku/gtin context
-        # Look for embedded JSON blocks that contain price data
-        for script_match in re.finditer(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
-            text = script_match.group(1)
-            
-            # Skip very small or very large scripts to avoid noise
-            if len(text) < 50 or '__typename' not in text:
-                continue
-            
-            # Try to extract JSON from the script
-            json_start = text.find('{')
-            if json_start == -1:
-                continue
-            
-            # Parse balanced braces
-            depth = 0
-            json_end = json_start
-            for i, c in enumerate(text[json_start:], json_start):
-                if c == '{':
-                    depth += 1
-                elif c == '}':
-                    depth -= 1
-                    if depth == 0:
-                        json_end = i + 1
-                        break
-            
+
+        # Target specific script IDs that contain SSR state (avoid parsing all scripts)
+        targeted_scripts = []
+
+        # Apollo state (Notino, etc.) - can be very large JSON
+        for match in re.finditer(r'<script[^>]*id=["\']__APOLLO_STATE__["\'][^>]*>(.*?)</script>', html, re.DOTALL):
+            targeted_scripts.append(match.group(1))
+
+        # Next.js data
+        for match in re.finditer(r'<script[^>]*id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>', html, re.DOTALL):
+            targeted_scripts.append(match.group(1))
+
+        # If no targeted scripts found, fall back to scanning all script tags with __typename
+        if not targeted_scripts:
+            for match in re.finditer(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
+                text = match.group(1)
+                if len(text) >= 50 and '__typename' in text:
+                    targeted_scripts.append(text)
+
+        for text in targeted_scripts:
+            # Try to parse as JSON directly first
+            data = None
             try:
-                data = json.loads(text[json_start:json_end])
+                data = json.loads(text.strip())
             except json.JSONDecodeError:
+                pass
+
+            # If direct parse failed, try to extract JSON starting with {
+            if data is None:
+                json_start = text.find('{')
+                if json_start == -1:
+                    continue
+                # Use json.JSONDecoder for robust parsing of large JSON
+                try:
+                    decoder = json.JSONDecoder()
+                    data, _ = decoder.raw_decode(text[json_start:])
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+            if not isinstance(data, dict):
                 continue
-            
+
             # Strategy A: Look for CatalogVariant:{id}.price pattern (Notino)
             if product_id_from_url:
                 variant_key = f"CatalogVariant:{product_id_from_url}"
@@ -316,7 +327,7 @@ def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
                             price = _parse_price_string(str(price_obj['value']))
                             if price:
                                 return price
-            
+
             # Strategy B: Recursive search for price objects with value+currency
             price_found = _search_json_for_price(data)
             if price_found:
@@ -324,7 +335,7 @@ def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
 
     except Exception as e:
         logger.debug(f"Embedded JSON price extraction failed: {e}")
-    
+
     return None
 
 
