@@ -149,6 +149,16 @@ class ProductDetailResponse(ProductResponse):
         from_attributes = True
 
 
+class ProductCreateResponse(ProductResponse):
+    """Product response that also reports the result of the initial price check."""
+    initial_check_success: Optional[bool] = None
+    initial_check_price: Optional[float] = None
+    initial_check_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
     password: str = Field(..., min_length=4, max_length=255)
@@ -399,9 +409,15 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
     return result
 
 
-@app.post("/api/products", response_model=ProductResponse, status_code=201)
+@app.post("/api/products", response_model=ProductCreateResponse, status_code=201)
 async def create_product(product: ProductCreate, request: Request, db: Session = Depends(get_db)):
-    """Add a new product to monitor (for current user)."""
+    """Add a new product to monitor (for current user).
+
+    After the product is created we immediately run an initial price check so the
+    user has a first data point without waiting for the next scheduled run or having
+    to click "Check Now" manually. A failed extraction does not fail the request —
+    the product is still created and reported via `initial_check_success`.
+    """
     user = get_user_from_request(request)
     user_id = user["user_id"]
 
@@ -426,7 +442,32 @@ async def create_product(product: ProductCreate, request: Request, db: Session =
     db.refresh(db_product)
 
     logger.info(f"Product added by user {user['username']}: {product.name}")
-    return db_product
+
+    # Perform the first price check right away (best-effort; never blocks product creation).
+    entry = check_product_price(db_product.id)
+
+    response = ProductCreateResponse(
+        id=db_product.id,
+        user_id=db_product.user_id,
+        name=db_product.name,
+        url=db_product.url,
+        currency=db_product.currency,
+        enabled=db_product.enabled,
+        scraper_type=db_product.scraper_type,
+        custom_selector=db_product.custom_selector,
+        created_at=db_product.created_at,
+        updated_at=db_product.updated_at,
+    )
+    if entry:
+        response.initial_check_success = True
+        response.initial_check_price = entry.price
+        logger.info(f"Initial price check for {product.name}: {entry.price} {entry.currency}")
+    else:
+        response.initial_check_success = False
+        response.initial_check_message = "Could not extract price from the page yet. Try 'Check Now'."
+        logger.warning(f"Initial price check failed for {product.name} ({product.url})")
+
+    return response
 
 
 @app.get("/api/products/{product_id}", response_model=ProductDetailResponse)

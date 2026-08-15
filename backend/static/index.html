@@ -122,6 +122,8 @@
         .product-name { font-weight: 600; cursor: pointer; color: var(--accent-blue); }
         .product-name:hover { text-decoration: underline; }
         .product-url { color: var(--text-muted); font-size: 0.85rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .product-prices { margin-top: 8px; font-size: 0.8rem; line-height: 2; }
+        .price-label { color: var(--text-secondary); margin-right: 4px; }
 
         .price-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-weight: 600; font-size: 0.9rem; }
         .price-current { background: rgba(59, 130, 246, 0.2); color: var(--accent-blue); }
@@ -496,7 +498,7 @@
 
         <!-- Settings View -->
         <div class="settings-view" id="settingsView">
-            <button class="btn btn-secondary" onclick="showListView()" style="margin-bottom: 20px;">← Back to Products</button>
+            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;">← Back to Products</button>
 
             <div class="settings-card">
                 <h2>🔔 Telegram Notifications</h2>
@@ -556,7 +558,7 @@
 
         <!-- Detail View -->
         <div class="detail-view" id="detailView">
-            <button class="btn btn-secondary" onclick="showListView()" style="margin-bottom: 20px;">← Back to Products</button>
+            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;">← Back to Products</button>
 
             <div class="detail-header">
                 <div class="detail-info">
@@ -975,14 +977,16 @@
                     container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
                     return;
                 }
-                let html = '<table><thead><tr><th>Product</th><th>Status</th><th>Current Price</th><th>Min Price</th><th>Avg Price</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<table><thead><tr><th>Product</th><th>Status</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
                 products.forEach(p => {
+                    // Current/min prices are shown as text under the link to keep the table narrow on mobile
+                    let pricesHtml = '';
+                    if (p.current_price) pricesHtml += '<span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span>';
+                    if (p.min_price) pricesHtml += (pricesHtml ? ' &nbsp;' : '') + '<span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>';
+                    if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
                     html += '<tr>';
-                    html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div></td>';
+                    html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
                     html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                    html += '<td>' + (p.current_price ? '<span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span>' : '<span style="color:var(--text-muted)">No data</span>') + '</td>';
-                    html += '<td>' + (p.min_price ? '<span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>' : '-') + '</td>';
-                    html += '<td>' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : '-') + '</td>';
                     html += '<td>' + (p.price_count || 0) + '</td>';
                     html += '<td class="actions-cell"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
@@ -1018,7 +1022,14 @@
                         scraper_type: document.getElementById('scraperType').value,
                         custom_selector: document.getElementById('customSelector').value || null,
                     });
-                    showToast('Product "' + product.name + '" added successfully!', 'success');
+                    // The server already ran the first price check for us - report its result.
+                    if (product.initial_check_success === false) {
+                        showToast(product.name + ' added. ' + (product.initial_check_message || "Could not extract a price yet."), 'error');
+                    } else if (product.initial_check_price != null) {
+                        showToast('Product "' + product.name + '" added! First price: ' + formatPrice(product.initial_check_price, product.currency), 'success');
+                    } else {
+                        showToast('Product "' + product.name + '" added successfully!', 'success');
+                    }
                     closeAddModal();
                     e.target.reset();
                     loadProducts();
@@ -1133,18 +1144,23 @@
                 }
             };
 
-            window.showProductDetail = async function(id) {
+            window.showProductDetail = async function(id, pushHistory) {
+                if (pushHistory === undefined) pushHistory = true;
                 currentProductId = id;
                 document.getElementById('listView').classList.add('hidden');
                 document.getElementById('detailView').classList.add('active');
                 const product = products.find(p => p.id === id);
-                if (!product) return;
+                if (!product) { showListView(); return; }
                 document.getElementById('detailName').textContent = product.name;
                 var urlEl = document.getElementById('detailUrl');
                 urlEl.textContent = product.url;
                 urlEl.href = product.url;
                 renderDetailStats(product);
                 await loadPriceHistory(id);
+                // Push a history entry so the mobile back button returns to the list view
+                if (pushHistory) {
+                    window.history.pushState({ view: 'detail', id: id }, '');
+                }
             };
 
             function renderDetailStats(p) {
@@ -1163,6 +1179,30 @@
                 if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
             };
 
+            // "Back to Products" button: prefer the browser history so it stays in sync
+            // with the mobile hardware back button.
+            window.goBackToList = function() {
+                const state = window.history.state;
+                if (state && (state.view === 'detail' || state.view === 'settings')) {
+                    window.history.back();
+                } else {
+                    showListView();
+                }
+            };
+
+            // Handle the mobile hardware back button / browser back: instead of closing
+            // the app, return to the product list when we're on a sub-view.
+            window.addEventListener('popstate', function(e) {
+                const state = e.state || {};
+                if (state.view === 'detail' && state.id != null) {
+                    window.showProductDetail(state.id, false);
+                } else if (state.view === 'settings') {
+                    window.showSettingsView(false);
+                } else {
+                    showListView();
+                }
+            });
+
             function hideAllViews() {
                 document.getElementById('detailView').classList.remove('active');
                 document.getElementById('listView').classList.remove('hidden');
@@ -1173,11 +1213,16 @@
             // ─── Telegram Settings ──────────────────────────────────────────
             let telegramSettingsLoaded = false;
 
-            window.showSettingsView = async function() {
+            window.showSettingsView = async function(pushHistory) {
+                if (pushHistory === undefined) pushHistory = true;
                 hideAllViews();
                 document.getElementById('listView').style.display = 'none';
                 document.getElementById('settingsView').classList.add('active');
                 await loadTelegramSettings();
+                // Push a history entry so the mobile back button returns to the list view
+                if (pushHistory) {
+                    window.history.pushState({ view: 'settings' }, '');
+                }
             };
 
             async function loadTelegramSettings() {
