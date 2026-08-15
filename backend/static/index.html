@@ -982,8 +982,10 @@
                     container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
                     return;
                 }
+                // Sort: active products on top, disabled ones at the bottom (stable within each group)
+                const sortedProducts = [...products].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
                 let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
-                products.forEach(p => {
+                sortedProducts.forEach(p => {
                     // Current/min prices are shown as text under the link to keep the table narrow on mobile
                     let pricesHtml = '';
                     if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
