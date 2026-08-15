@@ -564,7 +564,7 @@
                     <a id="detailUrl" href="#" target="_blank"></a>
                 </div>
                 <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-secondary btn-sm" onclick="openEditModal(currentProductId)">✏️ Edit</button>
+                    <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()">✏️ Edit</button>
                     <button class="btn btn-success btn-sm" onclick="checkCurrentProduct()">🔄 Check Now</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()">🗑 Delete</button>
                 </div>
@@ -1027,9 +1027,15 @@
                 }
             };
 
-            window.openEditModal = function(id) {
-                const product = products.find(p => p.id === id);
-                if (!product) return;
+            window.openEditModal = async function(id) {
+                let product;
+                try {
+                    // Fetch fresh data so the form always shows current values
+                    product = await window.api('GET', '/api/products/' + id);
+                } catch (err) {
+                    showToast('Failed to load product for editing', 'error');
+                    return;
+                }
                 document.getElementById('editProductId').value = product.id;
                 document.getElementById('editProductName').value = product.name;
                 document.getElementById('editProductUrl').value = product.url;
@@ -1038,6 +1044,10 @@
                 toggleEditCustomSelector();
                 document.getElementById('editCustomSelector').value = product.custom_selector || '';
                 document.getElementById('editModal').classList.add('active');
+            };
+
+            window.editCurrentProduct = function() {
+                if (currentProductId !== null) window.openEditModal(currentProductId);
             };
 
             window.closeEditModal = function() { document.getElementById('editModal').classList.remove('active'); };
