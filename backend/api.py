@@ -495,6 +495,17 @@ async def update_product(product_id: int, product: ProductUpdate, request: Reque
         raise HTTPException(status_code=404, detail="Product not found")
 
     update_data = product.model_dump(exclude_unset=True)
+
+    # If the URL is being changed, make sure it doesn't collide with another of this user's products
+    if "url" in update_data and update_data["url"] != db_product.url:
+        existing = db.query(Product).filter(
+            Product.user_id == user_id,
+            Product.url == update_data["url"],
+            Product.id != product_id,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="A product with this URL already exists")
+
     for field, value in update_data.items():
         setattr(db_product, field, value)
 

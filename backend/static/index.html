@@ -564,6 +564,7 @@
                     <a id="detailUrl" href="#" target="_blank"></a>
                 </div>
                 <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-secondary btn-sm" onclick="openEditModal(currentProductId)">✏️ Edit</button>
                     <button class="btn btn-success btn-sm" onclick="checkCurrentProduct()">🔄 Check Now</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()">🗑 Delete</button>
                 </div>
@@ -624,6 +625,48 @@
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeAddModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Add Product</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Product Modal -->
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <h2>Edit Product</h2>
+            <form onsubmit="saveProduct(event)">
+                <input type="hidden" id="editProductId">
+                <div class="form-group">
+                    <label>Product Name *</label>
+                    <input type="text" id="editProductName" required maxlength="255" placeholder="e.g., iPhone 15 Pro">
+                </div>
+                <div class="form-group">
+                    <label>Product URL *</label>
+                    <input type="url" id="editProductUrl" required maxlength="2048" placeholder="https://example.com/product">
+                </div>
+                <div class="form-group">
+                    <label>Currency</label>
+                    <select id="editCurrency">
+                        <option value="RON">RON - Romanian Leu</option>
+                        <option value="EUR">EUR - Euro</option>
+                        <option value="USD">USD - US Dollar</option>
+                        <option value="GBP">GBP - British Pound</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Scraper Type</label>
+                    <select id="editScraperType" onchange="toggleEditCustomSelector()">
+                        <option value="auto">Auto-detect</option>
+                        <option value="custom">Custom CSS Selector</option>
+                    </select>
+                </div>
+                <div class="form-group" id="editCustomSelectorGroup" style="display: none;">
+                    <label>CSS Selector for Price</label>
+                    <input type="text" id="editCustomSelector" maxlength="255" placeholder='e.g., .price or [itemprop="price"]'>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
         </div>
@@ -941,7 +984,7 @@
                     html += '<td>' + (p.min_price ? '<span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>' : '-') + '</td>';
                     html += '<td>' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : '-') + '</td>';
                     html += '<td>' + (p.price_count || 0) + '</td>';
-                    html += '<td class="actions-cell"><button class="btn btn-success btn-sm" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-danger btn-sm" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
+                    html += '<td class="actions-cell"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
                 });
                 html += '</tbody></table>';
@@ -981,6 +1024,55 @@
                     loadProducts();
                 } catch (err) {
                     showToast(err.message || 'Failed to add product', 'error');
+                }
+            };
+
+            window.openEditModal = function(id) {
+                const product = products.find(p => p.id === id);
+                if (!product) return;
+                document.getElementById('editProductId').value = product.id;
+                document.getElementById('editProductName').value = product.name;
+                document.getElementById('editProductUrl').value = product.url;
+                document.getElementById('editCurrency').value = product.currency || 'RON';
+                document.getElementById('editScraperType').value = product.scraper_type === 'custom' ? 'custom' : 'auto';
+                toggleEditCustomSelector();
+                document.getElementById('editCustomSelector').value = product.custom_selector || '';
+                document.getElementById('editModal').classList.add('active');
+            };
+
+            window.closeEditModal = function() { document.getElementById('editModal').classList.remove('active'); };
+
+            window.toggleEditCustomSelector = function() {
+                document.getElementById('editCustomSelectorGroup').style.display = document.getElementById('editScraperType').value === 'custom' ? 'block' : 'none';
+            };
+
+            window.saveProduct = async function(e) {
+                e.preventDefault();
+                const id = parseInt(document.getElementById('editProductId').value);
+                try {
+                    await window.api('PUT', '/api/products/' + id, {
+                        name: document.getElementById('editProductName').value.trim(),
+                        url: document.getElementById('editProductUrl').value.trim(),
+                        currency: document.getElementById('editCurrency').value,
+                        scraper_type: document.getElementById('editScraperType').value,
+                        custom_selector: document.getElementById('editCustomSelector').value || null,
+                    });
+                    showToast('Product updated successfully', 'success');
+                    closeEditModal();
+                    loadProducts();
+                    // Refresh the detail view if it's open for this product
+                    if (currentProductId === id) {
+                        const product = await window.api('GET', '/api/products/' + id);
+                        document.getElementById('detailName').textContent = product.name;
+                        var urlEl = document.getElementById('detailUrl');
+                        urlEl.textContent = product.url;
+                        urlEl.href = product.url;
+                        renderDetailStats(product);
+                    }
+                } catch (err) {
+                    let msg = err.message || 'Failed to update product';
+                    try { const parsed = JSON.parse(msg); if (parsed.detail) msg = parsed.detail; } catch (_) {}
+                    showToast(msg, 'error');
                 }
             };
 
