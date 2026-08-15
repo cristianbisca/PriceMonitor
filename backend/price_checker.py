@@ -71,13 +71,23 @@ def extract_price_auto(html: str, url: str) -> Optional[float]:
         logger.info(f"Extracted price from meta tags: {price}")
         return price
 
-    # Strategy 5: Common price-related CSS selectors
+    # Strategy 5: Amazon-specific price (priceToPay / corePriceDisplay / a-offscreen).
+    # Gated to Amazon hosts so it cannot affect other sites. Placed before the generic
+    # selector strategy because Amazon splits its price into sub-spans (.a-price-whole /
+    # .a-price-fraction) which would make the generic [class*="price"] match drop decimals.
+    if "amazon." in url.lower():
+        price = _extract_amazon_price(soup)
+        if price is not None:
+            logger.info(f"Extracted Amazon price: {price}")
+            return price
+
+    # Strategy 6: Common price-related CSS selectors
     price = _extract_selector_price(soup)
     if price is not None:
         logger.info(f"Extracted price from CSS selectors: {price}")
         return price
 
-    # Strategy 6: Price in microdata
+    # Strategy 7: Price in microdata
     price = _extract_microdata_price(soup)
     if price is not None:
         logger.info(f"Extracted price from microdata: {price}")
@@ -376,6 +386,49 @@ def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional
     return None
 
 
+def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
+    """Extract price from Amazon product pages (amazon.com/.de/.co.uk/etc.).
+
+    Amazon splits its displayed price into sub-spans (.a-price-symbol / .a-price-whole /
+    .a-price-fraction), so the generic [class*="price"] selector strategy would grab only
+    the whole-number part and drop the decimals. This targets the dedicated "price to pay"
+    element and the offscreen (screen-reader) price, which contain the full formatted value.
+    """
+    # 1. The "price to pay" element - Amazon's canonical current selling price.
+    for selector in (".priceToPay", ".apex-pricetopay-value"):
+        elem = soup.select_one(selector)
+        if elem:
+            text = elem.get_text(" ", strip=True)
+            price = _parse_price_string(text)
+            if price and 0 < price < 100000:
+                return price
+
+    # 2. The core price display block (desktop feature div).
+    for container_id in ("corePriceDisplay_desktop_feature_div", "corePrice_feature_div"):
+        container = soup.find(id=container_id)
+        if not container:
+            continue
+        offscreen = container.select_one(".a-offscreen")
+        if offscreen:
+            price = _parse_price_string(offscreen.get_text(" ", strip=True))
+            if price and 0 < price < 100000:
+                return price
+
+    # 3. First screen-reader (offscreen) price that isn't a list/RRP/null value.
+    for elem in soup.select(".a-offscreen"):
+        text = elem.get_text(" ", strip=True)
+        if not text or text.lower() == "null":
+            continue
+        lowered = text.lower()
+        if lowered.startswith(("was:", "rrp:")):
+            continue  # skip list/reference prices
+        price = _parse_price_string(text)
+        if price and 0 < price < 100000:
+            return price
+
+    return None
+
+
 def _extract_selector_price(soup: BeautifulSoup) -> Optional[float]:
     """Extract price using common CSS selectors."""
     # Common price-related selectors
@@ -423,6 +476,33 @@ def _extract_microdata_price(soup: BeautifulSoup) -> Optional[float]:
     return None
 
 
+def _fetch_page(url: str) -> str:
+    """Fetch a page's HTML, preferring browser-impersonated requests.
+
+    Sites like Amazon sit behind Akamai/Cloudflare bot walls that serve a captcha
+    interstitial to plain `requests`. curl_cffi replicates a real browser's TLS/JA3
+    fingerprint so we receive the actual product HTML instead of the wall. Falls back
+    to the plain requests session (original behaviour) if curl_cffi is unavailable or
+    every impersonation attempt fails, so existing sites are never made worse off.
+    """
+    try:
+        from curl_cffi import requests as cffi_requests
+
+        for browser in ("chrome124", "chrome120", "safari17_0"):
+            try:
+                resp = cffi_requests.get(url, impersonate=browser, timeout=30)
+                if resp.status_code == 200 and resp.text:
+                    return resp.text
+            except Exception as e:
+                logger.debug(f"curl_cffi {browser} fetch failed for {url}: {e}")
+    except ImportError:
+        logger.debug("curl_cffi not installed; using plain requests")
+
+    response = SESSION.get(url, timeout=30)
+    response.raise_for_status()
+    return response.text
+
+
 def check_product_price(product_id: int) -> Optional[PriceEntry]:
     """
     Check the price of a product and record it in the database.
@@ -435,10 +515,8 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
             logger.error(f"Product with id {product_id} not found")
             return None
 
-        # Fetch the page
-        response = SESSION.get(product.url, timeout=30)
-        response.raise_for_status()
-        html = response.text
+        # Fetch the page (browser-impersonated to get past bot walls like Amazon's)
+        html = _fetch_page(product.url)
 
         # Extract price based on scraper type
         if product.scraper_type == "custom" and product.custom_selector:
