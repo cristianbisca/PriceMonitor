@@ -118,6 +118,7 @@
         th { text-align: left; padding: 14px 24px; color: var(--text-secondary); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px; background: rgba(0,0,0,0.2); }
         td { padding: 16px 24px; border-top: 1px solid var(--border-color); vertical-align: middle; }
         tr:hover { background: var(--bg-hover); }
+        tr.clickable-row { cursor: pointer; }
 
         .product-name { font-weight: 600; cursor: pointer; color: var(--accent-blue); }
         .product-name:hover { text-decoration: underline; }
@@ -985,11 +986,11 @@
                     if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
                     if (p.min_price) pricesHtml += '<div class="price-line"><span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span></div>';
                     if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
-                    html += '<tr>';
-                    html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
+                    html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
+                    html += '<td><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
                     html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
                     html += '<td>' + (p.price_count || 0) + '</td>';
-                    html += '<td class="actions-cell"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
+                    html += '<td class="actions-cell" onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
                 });
                 html += '</tbody></table>';
