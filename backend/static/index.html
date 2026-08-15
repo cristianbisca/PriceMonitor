@@ -122,7 +122,8 @@
         .product-name { font-weight: 600; cursor: pointer; color: var(--accent-blue); }
         .product-name:hover { text-decoration: underline; }
         .product-url { color: var(--text-muted); font-size: 0.85rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .product-prices { margin-top: 8px; font-size: 0.8rem; line-height: 2; }
+        .product-prices { margin-top: 8px; font-size: 0.8rem; }
+        .price-line { line-height: 2; }
         .price-label { color: var(--text-secondary); margin-right: 4px; }
 
         .price-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-weight: 600; font-size: 0.9rem; }
@@ -981,8 +982,8 @@
                 products.forEach(p => {
                     // Current/min prices are shown as text under the link to keep the table narrow on mobile
                     let pricesHtml = '';
-                    if (p.current_price) pricesHtml += '<span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span>';
-                    if (p.min_price) pricesHtml += (pricesHtml ? ' &nbsp;' : '') + '<span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span>';
+                    if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
+                    if (p.min_price) pricesHtml += '<div class="price-line"><span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span></div>';
                     if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
                     html += '<tr>';
                     html += '<td><div class="product-name" onclick="showProductDetail(' + p.id + ')">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
