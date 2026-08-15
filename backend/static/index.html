@@ -114,6 +114,10 @@
         }
         .section-header h2 { font-size: 1.2rem; }
 
+        /* Horizontal scroll wrapper so the table stays usable on narrow screens */
+        .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .products-table { min-width: 720px; }
+
         table { width: 100%; border-collapse: collapse; }
         th { text-align: left; padding: 14px 24px; color: var(--text-secondary); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px; background: rgba(0,0,0,0.2); }
         td { padding: 16px 24px; border-top: 1px solid var(--border-color); vertical-align: middle; }
@@ -199,7 +203,6 @@
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             table { font-size: 0.85rem; }
             th, td { padding: 12px 16px; }
-            .actions-cell { flex-direction: column; }
         }
 
         /* Toggle Switch */
@@ -979,7 +982,7 @@
                     container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
                     return;
                 }
-                let html = '<table><thead><tr><th>Product</th><th>Status</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
                 products.forEach(p => {
                     // Current/min prices are shown as text under the link to keep the table narrow on mobile
                     let pricesHtml = '';
@@ -993,7 +996,7 @@
                     html += '<td class="actions-cell" onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
                 });
-                html += '</tbody></table>';
+                html += '</tbody></table></div>';
                 container.innerHTML = html;
             }
 
