@@ -7,6 +7,8 @@ A web application that monitors price changes for products across different e-co
 - **Multi-User Authentication** — Token-based auth with user registration, login, and logout
 - **Per-User Data Isolation** — Each user has their own products, price history, and settings
 - **Product Management** — Add products by URL with auto-detect or custom CSS selector price extraction
+- **Multi-Source Price Comparison** — Each product can have alternative store URLs, checked alongside the main one and plotted as separate lines per store
+- **Automated Alternate-Link Discovery** — Find the same product on other stores via EAN/GTIN/UPC or ASIN web search (same country domain), with per-product on/off toggle and manual "Find Links" trigger
 - **Scheduled Price Checks** — Configurable check times (default: 9 AM and 2 PM)
 - **Price History Charts** — Interactive Chart.js graphs showing price trends over time
 - **Minimum Price Tracking** — Highlights the lowest price ever recorded for each product
@@ -27,6 +29,7 @@ A web application that monitors price changes for products across different e-co
 │   │   └── (also declares TelegramNotification & AppSettings — currently unused)
 │   ├── main.py             # Application entry point
 │   ├── price_checker.py    # Web scraping & price extraction logic
+│   ├── alternate_links.py  # Auto-discovers the same product on other stores (EAN/GTIN/UPC/ASIN)
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
 │   ├── telegram_notifier.py# Telegram bot notifications (per-user chat ID support)
 │   ├── scheduler.py        # APScheduler for periodic checks
@@ -36,6 +39,8 @@ A web application that monitors price changes for products across different e-co
 ├── Dockerfile              # Single-stage Docker build
 ├── docker-compose.yml      # Docker Compose (local dev & Portainer deployment)
 ├── .env.example            # Environment variables template
+├── AGENTS.md               # Guide for AI-assisted development
+├── PROJECT_NOTES.md        # Detailed architecture & implementation notes
 └── README.md
 ```
 
@@ -79,6 +84,8 @@ python main.py
 | `DATABASE_URL` | `sqlite:///data/price_monitor.db` | Database connection string |
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token from @BotFather (required for notifications) |
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
+| `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for automatic alternate-link discovery |
+| `ALTERNATE_LINKS_MAX` | `3` | Max alternate links kept per product (min 1) |
 | `PORT` | `4300`* | HTTP server port (external) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
@@ -159,6 +166,7 @@ Each user configures their own Telegram notifications through the web interface:
 | `PUT` | `/api/products/{id}` | Update a product |
 | `DELETE` | `/api/products/{id}` | Delete a product |
 | `POST` | `/api/products/{id}/check` | Trigger immediate price check |
+| `POST` | `/api/products/{id}/find-alternates` | Trigger alternate-link discovery now (takes a couple of minutes) |
 | `GET` | `/api/products/{id}/prices` | Get price history (newest first) |
 | `GET` | `/api/products/{id}/prices/reverse` | Get price history (oldest first, for charts) |
 | `GET` | `/api/products/{id}/chart` | Generate PNG chart image |
@@ -217,6 +225,8 @@ curl -X POST http://localhost:4300/api/products \
   }'
 ```
 
+The server runs an initial price check right away (best-effort); the response includes `initial_check_success`, `initial_check_price`, and `initial_check_message`.
+
 ### Example: Update Telegram Settings
 
 ```bash
@@ -263,6 +273,20 @@ The auto-detect scraper then tries these methods in order (most → least reliab
 Price strings handle both EU (`1.234,56`) and US (`1,234.56`) number formats, and a sanity cap of `< 100000` is applied to reject false positives.
 
 If auto-detection fails, you can set a **custom CSS selector** when adding the product (`scraper_type: "custom"`).
+
+## 🔎 Automated Alternate-Link Discovery
+
+For each product you can let the app find the **same product on other stores** and monitor all of them:
+
+- The app identifies the product by a globally unique code — EAN/GTIN/UPC barcode (check-digit validated) or Amazon ASIN — taken from the product page metadata or URL slug. Store-internal IDs are rejected on purpose.
+- It web-searches that exact code (DuckDuckGo + Bing), keeping only results from **other stores with the same country domain suffix** (e.g. a `.ro` product only finds other `.ro` sites) and never keeping price-comparison aggregators (price.ro, compari.ro, idealo, …).
+- Every candidate page is fetched and **verified to display that exact product code** plus an extractable price. The cheapest verified links (up to `ALTERNATE_LINKS_MAX`) are saved as the product's alternative sources, which are then checked on every price run and plotted as one line per store on the graph.
+
+**How to trigger it:**
+- **Manually** — "🔎 Find Links" button on the product detail page (`POST /api/products/{id}/find-alternates`).
+- **On a schedule** — set `ALTERNATE_LINK_TIMES` (e.g. `02:00`); it runs for every enabled product where the per-product **"Auto find alternate links"** toggle is on (on by default).
+
+> Discovery makes several real web requests per product and can take a couple of minutes — that's expected.
 
 ## 📝 License
 
