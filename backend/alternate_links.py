@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup
 from database import SessionLocal
 from models import Product
 from price_checker import (
+    SESSION,
     _fetch_page,
     _extract_main_domain,
     _get_alternative_urls,
@@ -42,9 +43,18 @@ logger = logging.getLogger(__name__)
 
 # Be polite between candidate page fetches
 FETCH_DELAY_SECONDS = 1.5
+# Be polite between separate search-engine requests
+SEARCH_DELAY_SECONDS = 1.0
+# Be polite between Bing /ck/a redirect resolutions
+BING_RESOLVE_DELAY_SECONDS = 0.5
 # How many same-suffix search results to consider as candidates
 SEARCH_RESULT_LIMIT = 10
 PRICE_SANE_MAX = 1_000_000
+
+_BING_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+}
 
 # Two-part domain suffixes mapped to their country code, so e.g.
 # "magazin.com.ro" matches "emag.ro" (both resolve to "ro")
@@ -228,35 +238,124 @@ def _resolve_ddg_href(href: str) -> str:
     return href
 
 
-def _search_candidates(code: str, suffix: str, main_host: str, limit: int = SEARCH_RESULT_LIMIT) -> List[str]:
-    """Web-search the exact product code and keep results on the same domain suffix."""
-    search_url = "https://html.duckduckgo.com/html/?q=" + quote(f'"{code}"')
-    try:
-        page = _fetch_page(search_url)
-    except Exception as e:
-        logger.warning(f"Alternate-link search request failed for {code}: {e}")
-        return []
-
+def _ddg_urls(page: str, selector: str) -> List[str]:
+    """Real result URLs from a DuckDuckGo page (both the html and lite variants
+    wrap links in a /l/?uddg= redirect that must be unwrapped)."""
     soup = BeautifulSoup(page, "html.parser")
+    urls = []
+    for a in soup.select(selector):
+        url = _resolve_ddg_href(a.get("href") or "")
+        if url:
+            urls.append(url)
+    return urls
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _bing_rss_urls(code: str) -> List[str]:
+    """Bing's RSS output carries plain result URLs (no /ck/a redirect wrapper)."""
+    search_url = "https://www.bing.com/search?q=" + quote(f'"{code}"') + "&format=rss"
+    page = _fetch_page(search_url)
+    urls = []
+    for raw in re.findall(r"<link>\s*([^<]+?)\s*</link>", page):
+        url = raw.strip()
+        if url.startswith("http") and "bing.com" not in _host_of(url):
+            urls.append(url)
+    return urls
+
+
+def _resolve_bing_ck(href: str) -> str:
+    """Follow a bing.com/ck/a result redirect and return the real target URL."""
+    try:
+        resp = SESSION.get(href, headers=_BING_HEADERS, timeout=20, allow_redirects=False)
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = (resp.headers.get("Location") or "").strip()
+            if location.startswith("http"):
+                return location
+        resp = SESSION.get(href, headers=_BING_HEADERS, timeout=20, allow_redirects=True)
+        final = (resp.url or "").strip()
+        if final.startswith("http") and "bing.com" not in _host_of(final):
+            return final
+    except Exception as e:
+        logger.debug(f"Could not resolve Bing redirect {href}: {e}")
+    return ""
+
+
+def _bing_html_urls(code: str) -> List[str]:
+    """Result URLs from Bing's HTML page; /ck/a redirects are resolved to real URLs."""
+    search_url = "https://www.bing.com/search?q=" + quote(f'"{code}"')
+    page = _fetch_page(search_url)
+    soup = BeautifulSoup(page, "html.parser")
+    urls = []
+    for a in soup.select("li.b_algo h2 a"):
+        href = (a.get("href") or "").strip()
+        if not href.startswith("http"):
+            continue
+        if "bing.com/ck/a" in href:
+            time.sleep(BING_RESOLVE_DELAY_SECONDS)
+            resolved = _resolve_bing_ck(href)
+            if resolved:
+                urls.append(resolved)
+        elif "bing.com" not in _host_of(href):
+            urls.append(href)
+    return urls
+
+
+def _search_engines(code: str):
+    """Yield result-URL lists from several search backends, best effort.
+
+    No single engine is reliable from server IPs (DuckDuckGo frequently serves a
+    reduced result set to automated clients), so every engine that answers is
+    merged in _search_candidates.
+    """
+    quoted = f'"{code}"'
+    try:
+        yield _ddg_urls(_fetch_page("https://html.duckduckgo.com/html/?q=" + quote(quoted)), "a.result__a")
+    except Exception as e:
+        logger.warning(f"DuckDuckGo search failed for {code}: {e}")
+    try:
+        yield _ddg_urls(_fetch_page("https://lite.duckduckgo.com/lite/?q=" + quote(quoted)), "a.result-link")
+    except Exception as e:
+        logger.warning(f"DuckDuckGo Lite search failed for {code}: {e}")
+    try:
+        yield _bing_rss_urls(code)
+    except Exception as e:
+        logger.warning(f"Bing RSS search failed for {code}: {e}")
+    try:
+        yield _bing_html_urls(code)
+    except Exception as e:
+        logger.warning(f"Bing HTML search failed for {code}: {e}")
+
+
+def _search_candidates(code: str, suffix: str, main_host: str, limit: int = SEARCH_RESULT_LIMIT) -> List[str]:
+    """Web-search the exact product code and keep results on the same domain suffix.
+
+    Merges results from several search engines (DuckDuckGo html/lite, Bing RSS/HTML)
+    so one flaky or bot-limited engine does not leave the others untried.
+    """
     candidates: List[str] = []
     seen = set()
-    for a in soup.select("a.result__a"):
-        url = _resolve_ddg_href(a.get("href") or "")
-        if not url:
-            continue
-        try:
-            host = (urlparse(url).netloc or "").lower()
-        except Exception:
-            continue
-        if not host or _domain_suffix(host) != suffix or _is_same_site(host, main_host):
-            continue
-        normalized = url.rstrip("/")
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        candidates.append(url)
+    for index, engine_urls in enumerate(_search_engines(code)):
         if len(candidates) >= limit:
             break
+        if index:
+            time.sleep(SEARCH_DELAY_SECONDS)
+        for url in engine_urls:
+            host = _host_of(url)
+            if not host or _domain_suffix(host) != suffix or _is_same_site(host, main_host):
+                continue
+            normalized = url.rstrip("/")
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            candidates.append(url)
+            if len(candidates) >= limit:
+                break
 
     if not candidates:
         logger.info(f"No same-suffix search results for product code {code} (suffix '{suffix}')")
