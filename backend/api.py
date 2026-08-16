@@ -6,6 +6,7 @@ import json
 import logging
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,6 +84,7 @@ class ProductCreate(BaseModel):
     currency: str = Field(default="RON", max_length=10, description="Currency code")
     scraper_type: str = Field(default="auto", description="Scraper type: auto or custom")
     custom_selector: Optional[str] = Field(None, max_length=255, description="CSS selector for price")
+    alternative_urls: Optional[List[str]] = Field(None, description="Alternative product URLs to check as well")
 
 
 class ProductUpdate(BaseModel):
@@ -92,6 +94,7 @@ class ProductUpdate(BaseModel):
     enabled: Optional[bool] = None
     scraper_type: Optional[str] = None
     custom_selector: Optional[str] = None
+    alternative_urls: Optional[List[str]] = Field(None, description="Alternative product URLs to check as well")
 
 
 class ProductResponse(BaseModel):
@@ -103,11 +106,54 @@ class ProductResponse(BaseModel):
     enabled: bool
     scraper_type: str
     custom_selector: Optional[str]
+    alternative_urls: List[str] = []
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+    @field_validator("alternative_urls", mode="before")
+    @classmethod
+    def parse_alternative_urls(cls, v):
+        """Parse the JSON-encoded alternative URLs stored in the DB into a list."""
+        if not v:
+            return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, TypeError):
+                return []
+        return v
+
+
+def _parse_alternative_urls(raw) -> List[str]:
+    """Parse the JSON-encoded alternative URLs stored in the DB into a list."""
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return [u for u in parsed if isinstance(u, str)] if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if isinstance(raw, list):
+        return [u for u in raw if isinstance(u, str)]
+    return []
+
+
+def _extract_main_domain(url: str) -> str:
+    """Extract the main domain from a URL (e.g., 'https://www.notino.ro/x' -> 'notino.ro')."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        # Strip leading "www." for a cleaner label
+        if host.startswith("www."):
+            host = host[4:]
+        return host or url
+    except Exception:
+        return url
 
 
 def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -129,6 +175,7 @@ class PriceEntryResponse(BaseModel):
     currency: str
     checked_at: datetime
     is_minimum: bool
+    source: Optional[str] = None  # Main domain of the price source (e.g., "notino.ro")
 
     model_config = {"from_attributes": True}
 
@@ -191,6 +238,22 @@ async def startup():
             if "telegram_notifications_enabled" not in existing_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN telegram_notifications_enabled BOOLEAN DEFAULT 0"))
                 logger.info("Added column telegram_notifications_enabled to users table")
+
+    # Auto-migrate: add alternative_urls column to products table if missing
+    if "products" in inspector.get_table_names():
+        product_cols = {col["name"] for col in inspector.get_columns("products")}
+        with engine.begin() as conn:
+            if "alternative_urls" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN alternative_urls TEXT"))
+                logger.info("Added column alternative_urls to products table")
+
+    # Auto-migrate: add source column to price_history table if missing
+    if "price_history" in inspector.get_table_names():
+        history_cols = {col["name"] for col in inspector.get_columns("price_history")}
+        with engine.begin() as conn:
+            if "source" not in history_cols:
+                conn.execute(text("ALTER TABLE price_history ADD COLUMN source VARCHAR(255)"))
+                logger.info("Added column source to price_history table")
 
     # Log Telegram configuration status
     _log_configuration_status()
@@ -397,6 +460,7 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
             enabled=product.enabled,
             scraper_type=product.scraper_type,
             custom_selector=product.custom_selector,
+            alternative_urls=_parse_alternative_urls(product.alternative_urls),
             created_at=product.created_at,
             updated_at=product.updated_at,
             current_price=latest.price if latest else None,
@@ -436,6 +500,7 @@ async def create_product(product: ProductCreate, request: Request, db: Session =
         currency=product.currency,
         scraper_type=product.scraper_type,
         custom_selector=product.custom_selector,
+        alternative_urls=json.dumps(product.alternative_urls) if product.alternative_urls else None,
     )
     db.add(db_product)
     db.commit()
@@ -455,6 +520,7 @@ async def create_product(product: ProductCreate, request: Request, db: Session =
         enabled=db_product.enabled,
         scraper_type=db_product.scraper_type,
         custom_selector=db_product.custom_selector,
+        alternative_urls=_parse_alternative_urls(db_product.alternative_urls),
         created_at=db_product.created_at,
         updated_at=db_product.updated_at,
     )
@@ -512,6 +578,7 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
         enabled=product.enabled,
         scraper_type=product.scraper_type,
         custom_selector=product.custom_selector,
+        alternative_urls=_parse_alternative_urls(product.alternative_urls),
         created_at=product.created_at,
         updated_at=product.updated_at,
         current_price=latest.price if latest else None,
@@ -546,6 +613,25 @@ async def update_product(product_id: int, product: ProductUpdate, request: Reque
         ).first()
         if existing:
             raise HTTPException(status_code=409, detail="A product with this URL already exists")
+
+    # Validate alternative URLs (must be valid http(s) URLs and not duplicate the main URL or each other)
+    if "alternative_urls" in update_data:
+        alt_urls = [u.strip() for u in (update_data["alternative_urls"] or []) if u and u.strip()]
+        seen = set()
+        for alt_url in alt_urls:
+            try:
+                parsed = urlparse(alt_url)
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid alternative URL: {alt_url}")
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise HTTPException(status_code=400, detail=f"Alternative URL must be a valid http(s) URL: {alt_url}")
+            normalized = alt_url.rstrip("/")
+            if normalized == db_product.url.rstrip("/"):
+                raise HTTPException(status_code=400, detail="An alternative URL is the same as the main product URL")
+            if normalized in seen:
+                raise HTTPException(status_code=400, detail=f"Duplicate alternative URL: {alt_url}")
+            seen.add(normalized)
+        update_data["alternative_urls"] = json.dumps(alt_urls) if alt_urls else None
 
     for field, value in update_data.items():
         setattr(db_product, field, value)
@@ -721,12 +807,15 @@ async def get_price_chart(product_id: int, request: Request, db: Session = Depen
     if not entries:
         raise HTTPException(status_code=404, detail="No price history available")
 
-    # Prepare data for chart generation
+    # Prepare data for chart generation (include the source domain so each price
+    # source can be plotted as its own line on the graph)
+    main_domain = _extract_main_domain(product.url)
     price_data = [
         {
             "price": e.price,
             "checked_at": e.checked_at,
             "is_minimum": e.is_minimum,
+            "source": e.source or main_domain,
         }
         for e in entries
     ]
@@ -769,11 +858,13 @@ async def get_price_statistics_endpoint(product_id: int, request: Request, db: S
     if not entries:
         return {"message": "No price history available"}
 
+    main_domain = _extract_main_domain(product.url)
     price_data = [
         {
             "price": e.price,
             "checked_at": e.checked_at,
             "is_minimum": e.is_minimum,
+            "source": e.source or main_domain,
         }
         for e in entries
     ]

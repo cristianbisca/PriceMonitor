@@ -8,6 +8,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -503,10 +504,55 @@ def _fetch_page(url: str) -> str:
     return response.text
 
 
+def _extract_main_domain(url: str) -> str:
+    """Extract the main domain from a URL (e.g., 'https://www.notino.ro/x' -> 'notino.ro')."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        return host or url
+    except Exception:
+        return url
+
+
+def _get_alternative_urls(product: Product) -> list:
+    """Parse the product's alternative URLs (JSON array stored in a Text column)."""
+    if not product.alternative_urls:
+        return []
+    try:
+        parsed = json.loads(product.alternative_urls)
+        if isinstance(parsed, list):
+            return [u.strip() for u in parsed if isinstance(u, str) and u.strip()]
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning(f"Could not parse alternative_urls for product {getattr(product, 'id', '?')}: {e}")
+    return []
+
+
+def _extract_price_for_url(product: Product, url: str) -> Optional[float]:
+    """Fetch a single URL and extract the price using the product's scraper configuration."""
+    # Fetch the page (browser-impersonated to get past bot walls like Amazon's)
+    html = _fetch_page(url)
+
+    if product.scraper_type == "custom" and product.custom_selector:
+        soup = BeautifulSoup(html, "html.parser")
+        elem = soup.select_one(product.custom_selector)
+        if elem:
+            price_str = elem.get('data-price') or elem.get('content') or elem.get_text(strip=True)
+            return _parse_price_string(price_str)
+        return None
+
+    return extract_price_auto(html, url)
+
+
 def check_product_price(product_id: int) -> Optional[PriceEntry]:
     """
-    Check the price of a product and record it in the database.
-    Returns the created PriceEntry or None if price couldn't be extracted.
+    Check the price of a product across all its sources (main URL + alternative URLs)
+    and record one PriceEntry per successfully checked source. Each entry is tagged
+    with `source` = main domain of the URL it came from (e.g., "notino.ro").
+
+    Returns the first created PriceEntry (the main URL when it succeeds, otherwise
+    the first successful alternative) or None if no price could be extracted anywhere.
     """
     db = SessionLocal()
     try:
@@ -515,54 +561,62 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
             logger.error(f"Product with id {product_id} not found")
             return None
 
-        # Fetch the page (browser-impersonated to get past bot walls like Amazon's)
-        html = _fetch_page(product.url)
+        # Build the list of (url, source_label) pairs to check. The main URL is always
+        # first; alternative URLs are deduplicated and must differ from the main URL.
+        sources_to_check = [(product.url, _extract_main_domain(product.url))]
+        seen = {product.url.rstrip("/")}
+        for alt_url in _get_alternative_urls(product):
+            normalized = alt_url.rstrip("/")
+            if normalized not in seen:
+                seen.add(normalized)
+                sources_to_check.append((alt_url, _extract_main_domain(alt_url)))
 
-        # Extract price based on scraper type
-        if product.scraper_type == "custom" and product.custom_selector:
-            soup = BeautifulSoup(html, "html.parser")
-            elem = soup.select_one(product.custom_selector)
-            if elem:
-                price_str = elem.get('data-price') or elem.get('content') or elem.get_text(strip=True)
-                price = _parse_price_string(price_str)
-            else:
-                price = None
-        else:
-            price = extract_price_auto(html, product.url)
-
-        if price is None:
-            logger.warning(f"Could not extract price for {product.name} ({product.url})")
-            return None
-
-        # Find the current minimum price for this product
+        # Current global minimum price (across all sources) before this check cycle.
+        # A new entry is marked as minimum when it beats every previously recorded price.
         min_entry = db.query(PriceEntry).filter(
             PriceEntry.product_id == product_id
         ).order_by(PriceEntry.price.asc()).first()
+        current_min = min_entry.price if min_entry else None
 
-        is_minimum = min_entry is None or price < min_entry.price
+        first_entry: Optional[PriceEntry] = None
 
-        # Create price entry
-        entry = PriceEntry(
-            product_id=product_id,
-            price=price,
-            currency=product.currency,
-            checked_at=datetime.now(timezone.utc),
-            is_minimum=is_minimum,
-        )
-        db.add(entry)
-        db.commit()
-        db.refresh(entry)
+        for url, source_label in sources_to_check:
+            try:
+                price = _extract_price_for_url(product, url)
+            except requests.RequestException as e:
+                logger.error(f"Failed to fetch {url}: {e}")
+                continue
 
-        logger.info(
-            f"Recorded price for {product.name}: {price} {product.currency}"
-            f"{' (NEW MINIMUM!)' if is_minimum else ''}"
-        )
+            if price is None:
+                logger.warning(f"Could not extract price for {product.name} ({url})")
+                continue
 
-        return entry
+            is_minimum = current_min is None or price < current_min
+            entry = PriceEntry(
+                product_id=product_id,
+                price=price,
+                currency=product.currency,
+                checked_at=datetime.now(timezone.utc),
+                is_minimum=is_minimum,
+                source=source_label,
+            )
+            db.add(entry)
+            db.commit()
+            db.refresh(entry)
 
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch {product.url}: {e}")
-        return None
+            if current_min is None or price < current_min:
+                current_min = price
+            if first_entry is None:
+                first_entry = entry
+
+            logger.info(
+                f"Recorded price for {product.name} [{source_label}]: "
+                f"{price} {product.currency}"
+                f"{' (NEW MINIMUM!)' if is_minimum else ''}"
+            )
+
+        return first_entry
+
     except Exception as e:
         logger.error(f"Error checking price for product {product_id}: {e}")
         return None

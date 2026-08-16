@@ -40,6 +40,9 @@ class Product(Base):
     scraper_type = Column(String(50), default="auto")  # "auto", "custom", "amazon", "ecommerce", etc.
     custom_selector = Column(String(255), nullable=True)  # CSS selector for custom price extraction
 
+    # Alternative price source URLs (JSON array of strings, e.g., '["https://...", "..."]')
+    alternative_urls = Column(Text, nullable=True)
+
     # Relationships
     user = relationship("User", back_populates="products")
     price_history = relationship("PriceEntry", back_populates="product", cascade="all, delete-orphan")
@@ -60,6 +63,7 @@ class PriceEntry(Base):
     currency = Column(String(10), default="RON")
     checked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     is_minimum = Column(Boolean, default=False)  # True if this is the new minimum price
+    source = Column(String(255), nullable=True)  # Main domain of the price source (e.g., "notino.ro")
     raw_html = Column(Text, nullable=True)  # Stored for debugging/retries
 
     # Relationships

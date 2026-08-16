@@ -106,6 +106,15 @@
         .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent-blue); }
         .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
 
+        /* Alternative URL rows in add/edit modals */
+        .alt-url-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+        .alt-url-row input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-size: 0.9rem; }
+        .alt-url-row input:focus { outline: none; border-color: var(--accent-blue); }
+        .alt-source-chip { display: inline-flex; align-items: center; gap: 4px; margin: 6px 8px 0 0; padding: 3px 12px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); text-decoration: none; }
+        .alt-source-chip:hover { background: rgba(245, 158, 11, 0.3); }
+        .source-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); }
+        .source-badge.alt { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); }
+
         /* Products Table */
         .products-section { background: var(--bg-card); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border-color); }
         .section-header {
@@ -171,8 +180,8 @@
         .stat-item .stat-value { font-size: 1.4rem; font-weight: 700; }
 
         /* Price History Table */
-        .history-table th:nth-child(2), .history-table td:nth-child(2) { text-align: right; }
-        .history-table th:nth-child(3), .history-table td:nth-child(3) { text-align: center; }
+        .history-table th:nth-child(3), .history-table td:nth-child(3) { text-align: right; }
+        .history-table th:nth-child(4), .history-table td:nth-child(4) { text-align: center; }
         .min-badge { background: rgba(34, 197, 94, 0.2); color: var(--accent-green); padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
 
         /* Toast */
@@ -569,6 +578,7 @@
                 <div class="detail-info">
                     <h2 id="detailName"></h2>
                     <a id="detailUrl" href="#" target="_blank"></a>
+                    <div id="detailAltUrls"></div>
                 </div>
                 <div style="display: flex; gap: 8px;">
                     <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()">✏️ Edit</button>
@@ -629,6 +639,14 @@
                     <label>CSS Selector for Price</label>
                     <input type="text" id="customSelector" placeholder='e.g., .price or [itemprop="price"]'>
                 </div>
+                <div class="form-group">
+                    <label>Alternative Price Sources (optional)</label>
+                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+                        Extra product pages for the same item. Each is checked alongside the main URL and shown on the graph in its own color, labeled by domain.
+                    </p>
+                    <div id="addAltUrlsList"></div>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="addAddAltUrlRow()">+ Add Alternative Link</button>
+                </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeAddModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Add Product</button>
@@ -670,6 +688,14 @@
                 <div class="form-group" id="editCustomSelectorGroup" style="display: none;">
                     <label>CSS Selector for Price</label>
                     <input type="text" id="editCustomSelector" maxlength="255" placeholder='e.g., .price or [itemprop="price"]'>
+                </div>
+                <div class="form-group">
+                    <label>Alternative Price Sources (optional)</label>
+                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+                        Extra product pages for the same item. Each is checked alongside the main URL and shown on the graph in its own color, labeled by domain.
+                    </p>
+                    <div id="editAltUrlsList"></div>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="addEditAltUrlRow()">+ Add Alternative Link</button>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
@@ -1013,6 +1039,62 @@
                 return div.innerHTML;
             }
 
+            // ─── Alternative URL helpers ─────────────────────────────────────
+            function extractMainDomain(url) {
+                try {
+                    let host = new URL(url).hostname.toLowerCase();
+                    if (host.startsWith('www.')) host = host.substring(4);
+                    return host || url;
+                } catch (_) {
+                    return url;
+                }
+            }
+
+            function makeAltUrlRow(containerId, value) {
+                const row = document.createElement('div');
+                row.className = 'alt-url-row';
+                const input = document.createElement('input');
+                input.type = 'url';
+                input.placeholder = 'https://example.com/same-product';
+                input.value = value || '';
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'btn btn-danger btn-sm';
+                btn.textContent = '\u2715';
+                btn.onclick = function() { row.remove(); };
+                row.appendChild(input);
+                row.appendChild(btn);
+                document.getElementById(containerId).appendChild(row);
+            }
+
+            window.addAddAltUrlRow = function(value) { makeAltUrlRow('addAltUrlsList', value); };
+            window.addEditAltUrlRow = function(value) { makeAltUrlRow('editAltUrlsList', value); };
+
+            function renderAltUrlRows(containerId, urls) {
+                const container = document.getElementById(containerId);
+                container.innerHTML = '';
+                (urls || []).forEach(u => makeAltUrlRow(containerId, u));
+            }
+
+            function collectAltUrls(containerId) {
+                return Array.from(document.querySelectorAll('#' + containerId + ' input'))
+                    .map(i => i.value.trim())
+                    .filter(v => v !== '');
+            }
+
+            function renderDetailAltUrls(product) {
+                const el = document.getElementById('detailAltUrls');
+                if (!el) return;
+                const urls = product.alternative_urls || [];
+                if (urls.length === 0) { el.innerHTML = ''; return; }
+                let html = '<div style="margin-top:6px;">';
+                urls.forEach(u => {
+                    html += '<a class="alt-source-chip" href="' + escapeHtml(u) + '" target="_blank" title="' + escapeHtml(u) + '">\uD83D\uDD17 ' + escapeHtml(extractMainDomain(u)) + '</a>';
+                });
+                html += '</div>';
+                el.innerHTML = html;
+            }
+
             window.openAddModal = function() { document.getElementById('addModal').classList.add('active'); };
             window.closeAddModal = function() { document.getElementById('addModal').classList.remove('active'); };
             window.toggleCustomSelector = function() {
@@ -1028,6 +1110,7 @@
                         currency: document.getElementById('productCurrency').value,
                         scraper_type: document.getElementById('scraperType').value,
                         custom_selector: document.getElementById('customSelector').value || null,
+                        alternative_urls: collectAltUrls('addAltUrlsList'),
                     });
                     // The server already ran the first price check for us - report its result.
                     if (product.initial_check_success === false) {
@@ -1039,6 +1122,7 @@
                     }
                     closeAddModal();
                     e.target.reset();
+                    document.getElementById('addAltUrlsList').innerHTML = '';
                     loadProducts();
                 } catch (err) {
                     showToast(err.message || 'Failed to add product', 'error');
@@ -1061,6 +1145,7 @@
                 document.getElementById('editScraperType').value = product.scraper_type === 'custom' ? 'custom' : 'auto';
                 toggleEditCustomSelector();
                 document.getElementById('editCustomSelector').value = product.custom_selector || '';
+                renderAltUrlRows('editAltUrlsList', product.alternative_urls || []);
                 document.getElementById('editModal').classList.add('active');
             };
 
@@ -1084,6 +1169,7 @@
                         currency: document.getElementById('editCurrency').value,
                         scraper_type: document.getElementById('editScraperType').value,
                         custom_selector: document.getElementById('editCustomSelector').value || null,
+                        alternative_urls: collectAltUrls('editAltUrlsList'),
                     });
                     showToast('Product updated successfully', 'success');
                     closeEditModal();
@@ -1095,6 +1181,7 @@
                         var urlEl = document.getElementById('detailUrl');
                         urlEl.textContent = product.url;
                         urlEl.href = product.url;
+                        renderDetailAltUrls(product);
                         renderDetailStats(product);
                     }
                 } catch (err) {
@@ -1319,11 +1406,13 @@ async function loadPriceHistory(id) {
                         return;
                     }
                     renderChart(history);
-                    let html = '<table class="history-table"><thead><tr><th>Date</th><th>Price</th><th>Status</th></tr></thead><tbody>';
+                    let html = '<table class="history-table"><thead><tr><th>Date</th><th>Source</th><th>Price</th><th>Status</th></tr></thead><tbody>';
                     history.slice().reverse().forEach(entry => {
                         var tz = window.appTimezone || 'Europe/Bucharest';
                         var date = new Date(entry.checked_at).toLocaleString('ro-RO', { timeZone: tz, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-                        html += '<tr><td>' + date + '</td><td><strong>' + formatPrice(entry.price, entry.currency) + '</strong></td><td>' + (entry.is_minimum ? '<span class="min-badge">MINIMUM</span>' : '-') + '</td></tr>';
+                        var source = entry.source || '';
+                        var isAlt = history.some(function(e) { return e.source; }) && (source !== history[0].source);
+                        html += '<tr><td>' + date + '</td><td>' + (source ? '<span class="source-badge' + (isAlt ? ' alt' : '') + '">' + escapeHtml(source) + '</span>' : '-') + '</td><td><strong>' + formatPrice(entry.price, entry.currency) + '</strong></td><td>' + (entry.is_minimum ? '<span class="min-badge">MINIMUM</span>' : '-') + '</td></tr>';
                     });
                     html += '</tbody></table>';
                     document.getElementById('historyTableContainer').innerHTML = html;
@@ -1335,29 +1424,40 @@ async function loadPriceHistory(id) {
             function renderChart(history) {
                 const ctx = document.getElementById('priceChart').getContext('2d');
                 if (priceChartInstance) priceChartInstance.destroy();
-                const labels = history.map(e => new Date(e.checked_at));
+
+                // Group entries by source domain so each price source gets its own line.
+                // The first source chronologically is the main one and keeps the blue color;
+                // alternatives get distinct colors, matching the server-generated PNG chart.
+                const sources = [];
+                history.forEach(e => {
+                    const label = e.source || 'Price';
+                    if (!sources.includes(label)) sources.push(label);
+                });
+                const sourceColors = ['#3b82f6', '#f59e0b', '#10b981', '#a855f7', '#ec4899', '#14b8a6'];
+
+                const datasets = sources.map((source, idx) => {
+                    const color = sourceColors[idx % sourceColors.length];
+                    return {
+                        label: source,
+                        data: history.filter(e => (e.source || 'Price') === source).map(e => ({ x: new Date(e.checked_at), y: e.price })),
+                        borderColor: color,
+                        backgroundColor: idx === 0 ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
+                        borderWidth: 2, fill: idx === 0, tension: 0.3,
+                        pointRadius: 4, pointBackgroundColor: color,
+                    };
+                });
+
                 const minPoints = history.filter(e => e.is_minimum).map(e => ({ x: new Date(e.checked_at), y: e.price }));
+                datasets.push({
+                    label: 'Minimum Price',
+                    data: minPoints,
+                    borderColor: 'transparent', backgroundColor: '#22c55e',
+                    pointRadius: 10, pointStyle: 'star', pointHoverRadius: 12,
+                });
+
                 priceChartInstance = new Chart(ctx, {
                     type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [
-                            {
-                                label: 'Price',
-                                data: history.map((e, i) => ({ x: labels[i], y: e.price })),
-                                borderColor: '#3b82f6',
-                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                                borderWidth: 2, fill: true, tension: 0.3,
-                                pointRadius: 4, pointBackgroundColor: '#3b82f6',
-                            },
-                            {
-                                label: 'Minimum Price',
-                                data: minPoints,
-                                borderColor: 'transparent', backgroundColor: '#22c55e',
-                                pointRadius: 10, pointStyle: 'star', pointHoverRadius: 12,
-                            }
-                        ]
-                    },
+                    data: { datasets },
                     options: {
                         responsive: true, maintainAspectRatio: false,
                         interaction: { intersect: false, mode: 'index' },

@@ -80,49 +80,60 @@ def generate_price_chart(
     # Sort by date
     sorted_data = sorted(price_history, key=lambda x: x['checked_at'])
 
-    # Convert UTC timestamps to local timezone (Europe/Bucharest)
-    dates = [_convert_to_local_time(entry['checked_at']) for entry in sorted_data]
-    prices = [entry['price'] for entry in sorted_data]
-    is_minimums = [entry.get('is_minimum', False) for entry in sorted_data]
+    # Group entries by source (main domain of the URL). The first source in
+    # chronological order is treated as the main one and keeps the primary color.
+    sources = []  # ordered list of unique source labels
+    for entry in sorted_data:
+        label = entry.get('source') or 'Price'
+        if label not in sources:
+            sources.append(label)
 
     # Use configured timezone for matplotlib date formatting
     _tz = _get_default_timezone()
-    plt.rcParams['timezone'] = _tz.key
+    plt.rcParams['timezone'] = _tz.zone
 
-    # Find minimum price
-    min_price = min(prices)
-    max_price = max(prices)
+    all_prices = [entry['price'] for entry in sorted_data]
+    min_price = min(all_prices)
+    max_price = max(all_prices)
 
     # Create figure
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
 
-    # Color scheme
+    # Color scheme: main source keeps the original blue; alternative sources get
+    # distinct colors so they are easy to tell apart on the graph.
     line_color = '#2563eb'
     min_color = '#dc2626'
-    fill_color = '#2563eb20'
+    alt_colors = ['#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
 
-    # Plot main price line
-    ax.plot(dates, prices, color=line_color, linewidth=2, marker='o', markersize=4, label='Price')
+    # Plot one line per source, labeled with the main domain of that source
+    for idx, source in enumerate(sources):
+        color = line_color if idx == 0 else alt_colors[(idx - 1) % len(alt_colors)]
+        entries = [e for e in sorted_data if (e.get('source') or 'Price') == source]
+        s_dates = [_convert_to_local_time(e['checked_at']) for e in entries]
+        s_prices = [e['price'] for e in entries]
 
-    # Fill area under the line
-    ax.fill_between(dates, prices, alpha=0.1, color=line_color)
+        ax.plot(s_dates, s_prices, color=color, linewidth=2, marker='o', markersize=4, label=source)
 
-    # Highlight minimum price points
-    min_dates = [dates[i] for i in range(len(dates)) if is_minimums[i]]
-    min_prices_vals = [prices[i] for i in range(len(prices)) if is_minimums[i]]
+        # Fill area under the main source line only (keeps the chart readable)
+        if idx == 0:
+            ax.fill_between(s_dates, s_prices, alpha=0.1, color=color)
 
-    if min_dates:
+    # Highlight minimum price points (global across all sources)
+    min_entries = [e for e in sorted_data if e.get('is_minimum', False)]
+    if min_entries:
         ax.scatter(
-            min_dates, min_prices_vals,
+            [_convert_to_local_time(e['checked_at']) for e in min_entries],
+            [e['price'] for e in min_entries],
             color=min_color, s=150, zorder=5,
             marker='*', label='Minimum Price'
         )
 
     # Draw horizontal line at minimum price
     ax.axhline(y=min_price, color=min_color, linestyle='--', alpha=0.5, linewidth=1)
+    last_date = _convert_to_local_time(sorted_data[-1]['checked_at'])
     ax.annotate(
         f'Min: {min_price:.2f} {currency}',
-        xy=(dates[-1], min_price),
+        xy=(last_date, min_price),
         xytext=(10, 10),
         textcoords='offset points',
         color=min_color,
@@ -130,16 +141,20 @@ def generate_price_chart(
         fontsize=10,
     )
 
-    # Add current price annotation
-    ax.annotate(
-        f'{prices[-1]:.2f} {currency}',
-        xy=(dates[-1], prices[-1]),
-        xytext=(10, -15),
-        textcoords='offset points',
-        color=line_color,
-        fontweight='bold',
-        fontsize=10,
-    )
+    # Add current price annotation for each source (its latest value)
+    for idx, source in enumerate(sources):
+        entries = [e for e in sorted_data if (e.get('source') or 'Price') == source]
+        last_entry = entries[-1]
+        color = line_color if idx == 0 else alt_colors[(idx - 1) % len(alt_colors)]
+        ax.annotate(
+            f'{last_entry["price"]:.2f}',
+            xy=(_convert_to_local_time(last_entry['checked_at']), last_entry['price']),
+            xytext=(8, -4),
+            textcoords='offset points',
+            color=color,
+            fontweight='bold',
+            fontsize=9,
+        )
 
     # Formatting
     ax.set_title(f'Price History: {product_name}', fontsize=16, fontweight='bold', pad=20)
@@ -159,10 +174,14 @@ def generate_price_chart(
     # Add legend
     ax.legend(loc='upper right', framealpha=0.9)
 
-    # Calculate price change
-    if len(prices) > 1:
-        change = prices[-1] - prices[0]
-        change_pct = (change / prices[0]) * 100
+    # Calculate price change (based on the main source's series when available,
+    # otherwise across all entries in chronological order)
+    main_entries = [e for e in sorted_data if (e.get('source') or 'Price') == sources[0]]
+    first_price = main_entries[0]['price']
+    last_price = main_entries[-1]['price']
+    if len(main_entries) > 1:
+        change = last_price - first_price
+        change_pct = (change / first_price) * 100
         change_symbol = '+' if change >= 0 else ''
         change_color = '#16a34a' if change <= 0 else '#dc2626'  # Green for price drop
 
@@ -178,8 +197,8 @@ def generate_price_chart(
 
     # Add statistics box
     stats_text = (
-        f'Min: {min(prices):.2f} | Max: {max(prices):.2f} | '
-        f'Avg: {sum(prices) / len(prices):.2f}'
+        f'Min: {min(all_prices):.2f} | Max: {max(all_prices):.2f} | '
+        f'Avg: {sum(all_prices) / len(all_prices):.2f}'
     )
     ax.text(
         0.99, 0.02,
