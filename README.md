@@ -23,7 +23,8 @@ A web application that monitors price changes for products across different e-co
 │   ├── api.py              # FastAPI REST API endpoints (auth, products, telegram settings)
 │   ├── auth.py             # Token-based authentication system (middleware, token generation/validation)
 │   ├── database.py         # SQLAlchemy database setup
-│   ├── models.py           # Database models (User, Product, PriceEntry, TelegramNotification, AppSettings)
+│   ├── models.py           # Database models (User, Product, PriceEntry)
+│   │   └── (also declares TelegramNotification & AppSettings — currently unused)
 │   ├── main.py             # Application entry point
 │   ├── price_checker.py    # Web scraping & price extraction logic
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
@@ -78,9 +79,13 @@ python main.py
 | `DATABASE_URL` | `sqlite:///data/price_monitor.db` | Database connection string |
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token from @BotFather (required for notifications) |
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
-| `PORT` | `4300` | HTTP server port (external) |
+| `PORT` | `4300`* | HTTP server port (external) |
+| `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `TELEGRAM_CHAT_ID` | *(empty)* | Global fallback chat ID(s), comma-separated — used only when a user hasn't set their own via the web UI |
+
+> \* In code the defaults are `PORT=8000` and `DATABASE_URL=sqlite:///./price_monitor.db`; the Docker Compose / `.env` values shown above (`4300` and `sqlite:///data/price_monitor.db`) are what apply in practice.
 
 ### Authentication
 
@@ -168,6 +173,12 @@ Each user configures their own Telegram notifications through the web interface:
 | `PUT` | `/api/telegram/settings` | Update Telegram Chat ID and notification toggle |
 | `POST` | `/api/telegram/test` | Send test notification to user's chat |
 
+### Config
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `GET` | `/api/config/timezone` | Current server timezone (for the UI clock) | No |
+
 ### Example: Register a User
 
 ```bash
@@ -237,14 +248,21 @@ The web interface features:
 
 ## 🔧 Price Extraction Strategies
 
-The auto-detect scraper tries these methods in order:
+Pages are fetched with browser-impersonated requests (`curl_cffi`) to get past Akamai/Cloudflare bot walls (e.g. Amazon), falling back to a plain `requests` session if impersonation isn't available.
 
-1. **JSON-LD structured data** — `schema.org/Product` with `offers.price`
-2. **Meta tags** — Open Graph `product:price:amount`, schema.org `itemprop="price"`
-3. **CSS selectors** — Elements with "price" in class/id, `[data-price]` attributes
-4. **Microdata** — HTML5 microdata `itemprop="price"`
+The auto-detect scraper then tries these methods in order (most → least reliable):
 
-If auto-detection fails, you can set a custom CSS selector when adding the product.
+1. **Embedded SSR JSON** — parses `__APOLLO_STATE__` / `__NEXT_DATA__` scripts and targets the right variant via the product ID in the URL (e.g. `/p-12345/`); recursive search for `{value, currency}` price objects. Best for SPAs like Notino.
+2. **`data-testid` attributes** — `pd-price`, `price-variant`, `product-price`, `current-price` (SPAs use these for test automation).
+3. **JSON-LD structured data** — `schema.org/Product` `offers.price`, with URL / `@id` matching to pick the correct variant when multiple products are present.
+4. **Meta tags** — Open Graph `product:price:amount`, schema.org `itemprop="price"`.
+5. **Amazon-specific selectors** — `.priceToPay`, `.apex-pricetopay-value`, `corePriceDisplay_desktop_feature_div .a-offscreen`, and a generic `.a-offscreen` scan (skipping "was:" / "rrp:" / null values). Gated to `amazon.*` hosts because Amazon splits its price into sub-spans that would drop decimals.
+6. **Generic CSS selectors** — elements with "price" in class/id, `[data-price]` attributes, `.product-price`, `.current-price`, `.selling-price`, etc.
+7. **Microdata** — HTML5 microdata `itemprop="price"`.
+
+Price strings handle both EU (`1.234,56`) and US (`1,234.56`) number formats, and a sanity cap of `< 100000` is applied to reject false positives.
+
+If auto-detection fails, you can set a **custom CSS selector** when adding the product (`scraper_type: "custom"`).
 
 ## 📝 License
 
