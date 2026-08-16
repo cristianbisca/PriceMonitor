@@ -141,7 +141,7 @@ For each successfully-checked product, determines type by history:
 - Extensive diagnostic logging for common failures (invalid token, chat not found, bot not in group).
 
 ## 8. Charts (`graph_generator.py`)
-- `generate_price_chart()` — single-product history line chart, **one line per source domain**: the chronologically-first source keeps the primary blue and gets the area fill; alternatives get distinct colors (amber/green/purple/…) from a fixed palette. Each line is labeled with its main domain in the legend. Red stars for minimums (global across all sources); min line; current-price + change annotations per source; stats box (min/max/avg). Returns base64 PNG. Entries without `source` (legacy rows) fall back to `'Price'`.
+- `generate_price_chart()` — single-product history line chart, **one line per source domain**: the chronologically-first source keeps the primary blue and gets the area fill; alternatives get distinct colors (amber/green/purple/…) from a fixed palette. Each line is labeled with its main domain in the legend. Current-price + change annotations per source; stats box (max/avg). **No minimum-price markers** — min stars, min horizontal line, and the "Min:" annotation were removed on request (the frontend Chart.js chart likewise has no Minimum Price dataset). Returns base64 PNG. Entries without `source` (legacy rows) fall back to `'Price'`.
 - `generate_comparison_chart()` — multi-product overlay.
 - `get_price_statistics()` — min/max/avg/current/first/change/change_percent/total_checks.
 - **Timezone gotcha:** `_convert_to_local_time()` converts UTC → local TZ then **strips tzinfo** (returns naive) so matplotlib doesn't double-apply UTC conversion. `plt.rcParams['timezone']` set from `TZ` env.
@@ -204,6 +204,7 @@ python main.py
 
 ## 13. Conventions for Future Edits
 - **Alternative sources:** the product add/edit forms have an "Alternative Price Sources" section (`renderAltUrlRows`/`collectAltUrls` helpers, one input row per URL). The price-history table has a **Source** column (domain badge; alternative domains get an amber badge vs. blue for the main one), and the in-browser Chart.js chart mirrors the server PNG: one dataset per source domain with matching colors (`#3b82f6` main, then `#f59e0b`, `#10b981`, …).
+- **Product detail links:** the detail header shows every product-page link (main URL first, then alternatives) as a stacked block — source domain label on top, full clickable URL below it (`renderDetailLinks` + `.link-block`/`.link-source` CSS in `index.html`).
 - Frontend is a **single HTML file** — no build tooling; keep changes self-contained in `index.html`.
 - All API calls from the frontend send `X-PM-Token` header (see the `apiFetch`-style helper in `index.html`).
 - New price-extraction heuristics: add a strategy function in `price_checker.py` and wire it into `extract_price_auto()` at the correct priority position; gate site-specific logic by host (like the Amazon check).

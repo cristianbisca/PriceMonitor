@@ -93,8 +93,6 @@ def generate_price_chart(
     plt.rcParams['timezone'] = _tz.zone
 
     all_prices = [entry['price'] for entry in sorted_data]
-    min_price = min(all_prices)
-    max_price = max(all_prices)
 
     # Create figure
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
@@ -102,7 +100,6 @@ def generate_price_chart(
     # Color scheme: main source keeps the original blue; alternative sources get
     # distinct colors so they are easy to tell apart on the graph.
     line_color = '#2563eb'
-    min_color = '#dc2626'
     alt_colors = ['#f59e0b', '#10b981', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
 
     # Plot one line per source, labeled with the main domain of that source
@@ -117,29 +114,6 @@ def generate_price_chart(
         # Fill area under the main source line only (keeps the chart readable)
         if idx == 0:
             ax.fill_between(s_dates, s_prices, alpha=0.1, color=color)
-
-    # Highlight minimum price points (global across all sources)
-    min_entries = [e for e in sorted_data if e.get('is_minimum', False)]
-    if min_entries:
-        ax.scatter(
-            [_convert_to_local_time(e['checked_at']) for e in min_entries],
-            [e['price'] for e in min_entries],
-            color=min_color, s=150, zorder=5,
-            marker='*', label='Minimum Price'
-        )
-
-    # Draw horizontal line at minimum price
-    ax.axhline(y=min_price, color=min_color, linestyle='--', alpha=0.5, linewidth=1)
-    last_date = _convert_to_local_time(sorted_data[-1]['checked_at'])
-    ax.annotate(
-        f'Min: {min_price:.2f} {currency}',
-        xy=(last_date, min_price),
-        xytext=(10, 10),
-        textcoords='offset points',
-        color=min_color,
-        fontweight='bold',
-        fontsize=10,
-    )
 
     # Add current price annotation for each source (its latest value)
     for idx, source in enumerate(sources):
@@ -197,8 +171,7 @@ def generate_price_chart(
 
     # Add statistics box
     stats_text = (
-        f'Min: {min(all_prices):.2f} | Max: {max(all_prices):.2f} | '
-        f'Avg: {sum(all_prices) / len(all_prices):.2f}'
+        f'Max: {max(all_prices):.2f} | Avg: {sum(all_prices) / len(all_prices):.2f}'
     )
     ax.text(
         0.99, 0.02,

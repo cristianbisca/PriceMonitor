@@ -6,6 +6,7 @@ Supports multiple strategies for extracting prices.
 import re
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -17,6 +18,21 @@ from database import SessionLocal
 from models import Product, PriceEntry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PriceCheckResult:
+    """Plain-data result of a price check.
+
+    Returned by :func:`check_product_price` instead of a live ORM object so callers can
+    safely read its fields after the function's internal session has been closed (avoids
+    ``DetachedInstanceError`` when accessing attributes on a detached PriceEntry).
+    """
+    product_id: int
+    price: float
+    currency: str
+    is_minimum: bool
+    checked_at: datetime
 
 # Common price patterns found in web pages
 PRICE_PATTERNS = [
@@ -545,14 +561,16 @@ def _extract_price_for_url(product: Product, url: str) -> Optional[float]:
     return extract_price_auto(html, url)
 
 
-def check_product_price(product_id: int) -> Optional[PriceEntry]:
+def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
     """
     Check the price of a product across all its sources (main URL + alternative URLs)
     and record one PriceEntry per successfully checked source. Each entry is tagged
     with `source` = main domain of the URL it came from (e.g., "notino.ro").
 
-    Returns the first created PriceEntry (the main URL when it succeeds, otherwise
-    the first successful alternative) or None if no price could be extracted anywhere.
+    Returns a :class:`PriceCheckResult` for the first successfully recorded price
+    (the main URL when it succeeds, otherwise the first successful alternative), or
+    None if no price could be extracted anywhere. The result is plain data (not an ORM
+    object) so callers can read its fields safely after this function's session closes.
     """
     db = SessionLocal()
     try:
@@ -578,7 +596,7 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
         ).order_by(PriceEntry.price.asc()).first()
         current_min = min_entry.price if min_entry else None
 
-        first_entry: Optional[PriceEntry] = None
+        first_result: Optional[PriceCheckResult] = None
 
         for url, source_label in sources_to_check:
             try:
@@ -604,10 +622,20 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
             db.commit()
             db.refresh(entry)
 
+            # Capture plain values while the entry is still bound to a live session. A later
+            # commit in this loop would expire it again, and reading attributes after the
+            # session closes below would raise DetachedInstanceError.
+            if first_result is None:
+                first_result = PriceCheckResult(
+                    product_id=product_id,
+                    price=entry.price,
+                    currency=entry.currency,
+                    is_minimum=entry.is_minimum,
+                    checked_at=entry.checked_at,
+                )
+
             if current_min is None or price < current_min:
                 current_min = price
-            if first_entry is None:
-                first_entry = entry
 
             logger.info(
                 f"Recorded price for {product.name} [{source_label}]: "
@@ -615,7 +643,7 @@ def check_product_price(product_id: int) -> Optional[PriceEntry]:
                 f"{' (NEW MINIMUM!)' if is_minimum else ''}"
             )
 
-        return first_entry
+        return first_result
 
     except Exception as e:
         logger.error(f"Error checking price for product {product_id}: {e}")

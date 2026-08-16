@@ -161,6 +161,8 @@
         }
         .detail-info h2 { font-size: 1.5rem; margin-bottom: 8px; }
         .detail-info a { color: var(--accent-blue); text-decoration: none; word-break: break-all; }
+        .link-block { margin-top: 6px; }
+        .link-source { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 2px; }
 
         .chart-container {
             background: var(--bg-card); border-radius: 12px; padding: 24px;
@@ -577,8 +579,7 @@
             <div class="detail-header">
                 <div class="detail-info">
                     <h2 id="detailName"></h2>
-                    <a id="detailUrl" href="#" target="_blank"></a>
-                    <div id="detailAltUrls"></div>
+                    <div id="detailLinks"></div>
                 </div>
                 <div style="display: flex; gap: 8px;">
                     <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()">✏️ Edit</button>
@@ -1082,16 +1083,16 @@
                     .filter(v => v !== '');
             }
 
-            function renderDetailAltUrls(product) {
-                const el = document.getElementById('detailAltUrls');
+            function renderDetailLinks(product) {
+                const el = document.getElementById('detailLinks');
                 if (!el) return;
-                const urls = product.alternative_urls || [];
-                if (urls.length === 0) { el.innerHTML = ''; return; }
-                let html = '<div style="margin-top:6px;">';
-                urls.forEach(u => {
-                    html += '<a class="alt-source-chip" href="' + escapeHtml(u) + '" target="_blank" title="' + escapeHtml(u) + '">\uD83D\uDD17 ' + escapeHtml(extractMainDomain(u)) + '</a>';
+                // Main product page first, then each alternative link: source domain on top, full URL below it.
+                const links = [product.url || ''].concat(product.alternative_urls || []);
+                let html = '';
+                links.forEach(u => {
+                    if (!u) return;
+                    html += '<div class="link-block"><span class="link-source">' + escapeHtml(extractMainDomain(u)) + '</span><a href="' + escapeHtml(u) + '" target="_blank" title="' + escapeHtml(u) + '">' + escapeHtml(u) + '</a></div>';
                 });
-                html += '</div>';
                 el.innerHTML = html;
             }
 
@@ -1178,10 +1179,7 @@
                     if (currentProductId === id) {
                         const product = await window.api('GET', '/api/products/' + id);
                         document.getElementById('detailName').textContent = product.name;
-                        var urlEl = document.getElementById('detailUrl');
-                        urlEl.textContent = product.url;
-                        urlEl.href = product.url;
-                        renderDetailAltUrls(product);
+                        renderDetailLinks(product);
                         renderDetailStats(product);
                     }
                 } catch (err) {
@@ -1246,9 +1244,7 @@
                 const product = products.find(p => p.id === id);
                 if (!product) { showListView(); return; }
                 document.getElementById('detailName').textContent = product.name;
-                var urlEl = document.getElementById('detailUrl');
-                urlEl.textContent = product.url;
-                urlEl.href = product.url;
+                renderDetailLinks(product);
                 renderDetailStats(product);
                 await loadPriceHistory(id);
                 // Push a history entry so the mobile back button returns to the list view
@@ -1445,14 +1441,6 @@ async function loadPriceHistory(id) {
                         borderWidth: 2, fill: idx === 0, tension: 0.3,
                         pointRadius: 4, pointBackgroundColor: color,
                     };
-                });
-
-                const minPoints = history.filter(e => e.is_minimum).map(e => ({ x: new Date(e.checked_at), y: e.price }));
-                datasets.push({
-                    label: 'Minimum Price',
-                    data: minPoints,
-                    borderColor: 'transparent', backgroundColor: '#22c55e',
-                    pointRadius: 10, pointStyle: 'star', pointHoverRadius: 12,
                 });
 
                 priceChartInstance = new Chart(ctx, {
