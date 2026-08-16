@@ -10,9 +10,11 @@ product it:
   2. searches the web for other stores selling the same product, restricted
      to domains with the same country suffix (e.g. .ro original -> only
      other .ro sites),
-  3. verifies every candidate page actually displays the same product code,
-  4. saves the cheapest verified links (up to ALTERNATE_LINKS_MAX, default 3)
-     to Product.alternative_urls alongside the existing links.
+   3. verifies every candidate page actually displays the same product code,
+   4. saves the cheapest verified links (up to ALTERNATE_LINKS_MAX, default 3)
+      to Product.alternative_urls alongside the existing links; price-comparison
+      aggregators (price.ro, compari.ro, idealo.de, ...) are never saved because
+      their pages list offers from many stores rather than being a shop to monitor.
 
 Store-internal identifiers (eMAG p-1234567, Notino variant IDs, plain model
 numbers) are deliberately rejected: they only identify a product inside one
@@ -70,6 +72,15 @@ TWO_PART_CC_TLDS = {
 # amazon.{tld} does not use the bare country code for every country
 AMAZON_TLDS = {"uk": "co.uk"}
 
+# Price-comparison aggregators: their pages list offers from many stores, so a
+# verified link there is a multi-store listing, not a shop to monitor.
+AGGREGATOR_HOSTS = {
+    "price.ro", "compari.ro", "priceplanet.ro", "oferte.net",
+    "idealo.de", "idealo.fr", "idealo.es", "idealo.it", "idealo.nl", "geizhals.de", "billiger.de",
+    "comperia.pl", "kupi-tanio.pl",
+    "shopzilla.com",
+}
+
 _CODE_FIELDS = ("gtin", "gtin13", "gtin12", "gtin14", "upc", "ean", "sku", "mpn")
 
 _ASIN_URL_RE = re.compile(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})(?:[/?#]|$)")
@@ -109,6 +120,16 @@ def _is_same_site(candidate_host: str, original_host: str) -> bool:
     if not c or not o:
         return False
     return c == o or c.endswith("." + o) or o.endswith("." + c)
+
+
+def _is_aggregator(host: str) -> bool:
+    """True when the host is a known price-comparison aggregator (subdomains count)."""
+    host = (host or "").lower().strip().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in AGGREGATOR_HOSTS)
 
 
 def _valid_ean(digits: str) -> bool:
@@ -347,7 +368,7 @@ def _search_candidates(code: str, suffix: str, main_host: str, limit: int = SEAR
             time.sleep(SEARCH_DELAY_SECONDS)
         for url in engine_urls:
             host = _host_of(url)
-            if not host or _domain_suffix(host) != suffix or _is_same_site(host, main_host):
+            if not host or _domain_suffix(host) != suffix or _is_same_site(host, main_host) or _is_aggregator(host):
                 continue
             normalized = url.rstrip("/")
             if normalized in seen:
@@ -444,7 +465,7 @@ def find_alternate_links(product_id: int) -> dict:
             if url.rstrip("/") in seen_urls:
                 continue
             host = (urlparse(url).netloc or "").lower()
-            if not host or _is_same_site(host, main_host):
+            if not host or _is_same_site(host, main_host) or _is_aggregator(host):
                 continue
             seen_urls.add(url.rstrip("/"))
             time.sleep(FETCH_DELAY_SECONDS)
@@ -455,6 +476,9 @@ def find_alternate_links(product_id: int) -> dict:
             logger.info(f"{product.name}: verified candidate {url} at {price} {product.currency}")
 
         for url in existing:
+            if _is_aggregator(_host_of(url)):
+                logger.info(f"{product.name}: dropping aggregator link {url}")
+                continue
             time.sleep(FETCH_DELAY_SECONDS)
             pool.append((url, _price_url(url)))
 
