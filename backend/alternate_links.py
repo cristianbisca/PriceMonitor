@@ -156,6 +156,20 @@ def _harvest_page_codes(soup: BeautifulSoup) -> List[Tuple[str, str]]:
     return found
 
 
+def _ean_from_url(url: str) -> Optional[str]:
+    """Extract a check-digit-validated barcode from the URL itself.
+
+    Many stores embed the EAN in the URL slug (eMAG: .../name-4744131012001/pd/..),
+    so a URL is a legitimate source for the code even when the page metadata is
+    missing or only carries store-internal IDs.
+    """
+    for match in re.finditer(r"\d+", unquote(url or "")):
+        digits = match.group(0)
+        if _valid_ean(digits):
+            return digits
+    return None
+
+
 def _extract_product_code(html: str, url: str) -> Optional[Tuple[str, str]]:
     """Return (type, code) for a globally unique product code, else None.
 
@@ -163,6 +177,9 @@ def _extract_product_code(html: str, url: str) -> Optional[Tuple[str, str]]:
     accepted: EAN/UPC/GTIN barcodes (check-digit validated) and Amazon ASINs.
     Store-internal IDs are rejected so we never save an alternate link we are
     not reasonably sure is the same product.
+
+    Sources, in priority order: page metadata (JSON-LD/microdata/meta), then a
+    check-digit-validated barcode embedded in the product URL.
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -176,12 +193,21 @@ def _extract_product_code(html: str, url: str) -> Optional[Tuple[str, str]]:
         digits = re.sub(r"\D", "", cleaned)
         if field in ("gtin", "gtin13", "gtin12", "gtin14", "upc", "ean") and _valid_ean(digits):
             return ("ean", digits)
-        if field in ("sku", "mpn") and _ASIN_RE.match(cleaned):
-            if cleaned not in asin_candidates:
-                asin_candidates.append(cleaned)
+        if field in ("sku", "mpn"):
+            # Some stores file the EAN under "sku"/"mpn" (eMAG uses "mpn" for it);
+            # a value that passes the barcode check is a genuine EAN even there.
+            if _ASIN_RE.match(cleaned):
+                if cleaned not in asin_candidates:
+                    asin_candidates.append(cleaned)
+            elif _valid_ean(digits):
+                return ("ean", digits)
 
     if asin_candidates:
         return ("asin", asin_candidates[0])
+
+    ean = _ean_from_url(url)
+    if ean:
+        return ("ean", ean)
     return None
 
 
