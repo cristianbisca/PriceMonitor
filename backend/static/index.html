@@ -162,7 +162,8 @@
         .detail-info h2 { font-size: 1.5rem; margin-bottom: 8px; }
         .detail-info a { color: var(--accent-blue); text-decoration: none; word-break: break-all; }
         .link-block { margin-top: 6px; }
-        .link-source { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 2px; }
+        .link-source { display: inline-block; font-size: 0.8rem; font-weight: 600; color: var(--accent-blue); text-decoration: none; cursor: pointer; }
+        .link-source:hover { text-decoration: underline; }
 
         .chart-container {
             background: var(--bg-card); border-radius: 12px; padding: 24px;
@@ -1086,12 +1087,12 @@
             function renderDetailLinks(product) {
                 const el = document.getElementById('detailLinks');
                 if (!el) return;
-                // Main product page first, then each alternative link: source domain on top, full URL below it.
+                // Main product page first, then each alternative link: clickable source domain.
                 const links = [product.url || ''].concat(product.alternative_urls || []);
                 let html = '';
                 links.forEach(u => {
                     if (!u) return;
-                    html += '<div class="link-block"><span class="link-source">' + escapeHtml(extractMainDomain(u)) + '</span><a href="' + escapeHtml(u) + '" target="_blank" title="' + escapeHtml(u) + '">' + escapeHtml(u) + '</a></div>';
+                    html += '<div class="link-block"><a class="link-source" href="' + escapeHtml(u) + '" target="_blank" title="' + escapeHtml(u) + '">' + escapeHtml(extractMainDomain(u)) + '</a></div>';
                 });
                 el.innerHTML = html;
             }
