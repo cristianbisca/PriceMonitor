@@ -585,6 +585,7 @@
                 <div style="display: flex; gap: 8px;">
                     <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()">✏️ Edit</button>
                     <button class="btn btn-success btn-sm" onclick="checkCurrentProduct()">🔄 Check Now</button>
+                    <button class="btn btn-secondary btn-sm" id="findAlternatesBtn" title="Search the web for the same product on other stores in the same country" onclick="findCurrentAlternates()">🔎 Find Links</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()">🗑 Delete</button>
                 </div>
             </div>
@@ -649,6 +650,17 @@
                     <div id="addAltUrlsList"></div>
                     <button type="button" class="btn btn-secondary btn-sm" onclick="addAddAltUrlRow()">+ Add Alternative Link</button>
                 </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="autoAlternates" checked style="margin-top: 3px;">
+                        <span>
+                            Auto find alternate links
+                            <span style="font-size: 0.8rem; color: var(--text-muted); display: block;">
+                                Scheduled web search for the same product (matched by EAN/GTIN/ASIN on other sites with the same country domain, e.g. .ro). Up to 3 links, lowest price first.
+                            </span>
+                        </span>
+                    </label>
+                </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeAddModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Add Product</button>
@@ -698,6 +710,17 @@
                     </p>
                     <div id="editAltUrlsList"></div>
                     <button type="button" class="btn btn-secondary btn-sm" onclick="addEditAltUrlRow()">+ Add Alternative Link</button>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="editAutoAlternates" checked style="margin-top: 3px;">
+                        <span>
+                            Auto find alternate links
+                            <span style="font-size: 0.8rem; color: var(--text-muted); display: block;">
+                                Scheduled web search for the same product (matched by EAN/GTIN/ASIN on other sites with the same country domain, e.g. .ro). Up to 3 links, lowest price first.
+                            </span>
+                        </span>
+                    </label>
                 </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
@@ -1113,6 +1136,7 @@
                         scraper_type: document.getElementById('scraperType').value,
                         custom_selector: document.getElementById('customSelector').value || null,
                         alternative_urls: collectAltUrls('addAltUrlsList'),
+                        auto_alternate_links: document.getElementById('autoAlternates').checked,
                     });
                     // The server already ran the first price check for us - report its result.
                     if (product.initial_check_success === false) {
@@ -1148,6 +1172,7 @@
                 toggleEditCustomSelector();
                 document.getElementById('editCustomSelector').value = product.custom_selector || '';
                 renderAltUrlRows('editAltUrlsList', product.alternative_urls || []);
+                document.getElementById('editAutoAlternates').checked = product.auto_alternate_links !== false;
                 document.getElementById('editModal').classList.add('active');
             };
 
@@ -1172,6 +1197,7 @@
                         scraper_type: document.getElementById('editScraperType').value,
                         custom_selector: document.getElementById('editCustomSelector').value || null,
                         alternative_urls: collectAltUrls('editAltUrlsList'),
+                        auto_alternate_links: document.getElementById('editAutoAlternates').checked,
                     });
                     showToast('Product updated successfully', 'success');
                     closeEditModal();
@@ -1223,6 +1249,32 @@
                     loadProducts();
                 } catch (err) {
                     showToast('Failed to check price', 'error');
+                }
+            };
+
+            window.findCurrentAlternates = async function() {
+                if (currentProductId === null) return;
+                const btn = document.getElementById('findAlternatesBtn');
+                if (btn) { btn.disabled = true; btn.textContent = '⏳ Searching...'; }
+                try {
+                    const r = await window.api('POST', '/api/products/' + currentProductId + '/find-alternates');
+                    const saved = (r.saved_alternative_urls || []).length;
+                    if (r.success === false) {
+                        showToast(r.message || 'Alternate link search failed', 'error');
+                    } else if (r.code) {
+                        showToast('Saved ' + saved + ' alternate link(s) via ' + r.code.type.toUpperCase() + ' ' + r.code.value, 'success');
+                    } else {
+                        showToast(r.message || 'No alternate links added', 'info');
+                    }
+                    loadProducts();
+                    try {
+                        const product = await window.api('GET', '/api/products/' + currentProductId);
+                        renderDetailLinks(product);
+                    } catch (_) { /* detail refresh is best-effort */ }
+                } catch (err) {
+                    showToast(err.message || 'Alternate link search failed', 'error');
+                } finally {
+                    if (btn) { btn.disabled = false; btn.textContent = '🔎 Find Links'; }
                 }
             };
 

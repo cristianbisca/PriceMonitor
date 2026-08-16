@@ -35,6 +35,7 @@ class TelegramSettingsRequest(BaseModel):
     telegram_chat_id: Optional[str] = Field(None, min_length=1, max_length=100)
     telegram_notifications_enabled: Optional[bool] = None
 from price_checker import check_product_price, run_all_price_checks
+from alternate_links import find_alternate_links
 from graph_generator import generate_price_chart, get_price_statistics
 from telegram_notifier import (
     test_notification,
@@ -85,6 +86,7 @@ class ProductCreate(BaseModel):
     scraper_type: str = Field(default="auto", description="Scraper type: auto or custom")
     custom_selector: Optional[str] = Field(None, max_length=255, description="CSS selector for price")
     alternative_urls: Optional[List[str]] = Field(None, description="Alternative product URLs to check as well")
+    auto_alternate_links: bool = Field(default=True, description="Allow the scheduler to auto-discover alternative links")
 
 
 class ProductUpdate(BaseModel):
@@ -95,6 +97,7 @@ class ProductUpdate(BaseModel):
     scraper_type: Optional[str] = None
     custom_selector: Optional[str] = None
     alternative_urls: Optional[List[str]] = Field(None, description="Alternative product URLs to check as well")
+    auto_alternate_links: Optional[bool] = Field(None, description="Allow the scheduler to auto-discover alternative links")
 
 
 class ProductResponse(BaseModel):
@@ -107,6 +110,7 @@ class ProductResponse(BaseModel):
     scraper_type: str
     custom_selector: Optional[str]
     alternative_urls: List[str] = []
+    auto_alternate_links: bool = True
     created_at: datetime
     updated_at: datetime
 
@@ -246,6 +250,9 @@ async def startup():
             if "alternative_urls" not in product_cols:
                 conn.execute(text("ALTER TABLE products ADD COLUMN alternative_urls TEXT"))
                 logger.info("Added column alternative_urls to products table")
+            if "auto_alternate_links" not in product_cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN auto_alternate_links BOOLEAN DEFAULT 1"))
+                logger.info("Added column auto_alternate_links to products table")
 
     # Auto-migrate: add source column to price_history table if missing
     if "price_history" in inspector.get_table_names():
@@ -461,6 +468,7 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
             scraper_type=product.scraper_type,
             custom_selector=product.custom_selector,
             alternative_urls=_parse_alternative_urls(product.alternative_urls),
+            auto_alternate_links=bool(product.auto_alternate_links),
             created_at=product.created_at,
             updated_at=product.updated_at,
             current_price=latest.price if latest else None,
@@ -501,6 +509,7 @@ async def create_product(product: ProductCreate, request: Request, db: Session =
         scraper_type=product.scraper_type,
         custom_selector=product.custom_selector,
         alternative_urls=json.dumps(product.alternative_urls) if product.alternative_urls else None,
+        auto_alternate_links=product.auto_alternate_links,
     )
     db.add(db_product)
     db.commit()
@@ -521,6 +530,7 @@ async def create_product(product: ProductCreate, request: Request, db: Session =
         scraper_type=db_product.scraper_type,
         custom_selector=db_product.custom_selector,
         alternative_urls=_parse_alternative_urls(db_product.alternative_urls),
+        auto_alternate_links=bool(db_product.auto_alternate_links),
         created_at=db_product.created_at,
         updated_at=db_product.updated_at,
     )
@@ -579,6 +589,7 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
         scraper_type=product.scraper_type,
         custom_selector=product.custom_selector,
         alternative_urls=_parse_alternative_urls(product.alternative_urls),
+        auto_alternate_links=bool(product.auto_alternate_links),
         created_at=product.created_at,
         updated_at=product.updated_at,
         current_price=latest.price if latest else None,
@@ -749,6 +760,27 @@ async def check_product_now(product_id: int, request: Request, db: Session = Dep
             "success": False,
             "message": "Could not extract price from the page",
         }
+
+
+@app.post("/api/products/{product_id}/find-alternates")
+def find_alternates_now(product_id: int, request: Request, db: Session = Depends(get_db)):
+    """Manually trigger alternate-link discovery for a product (only if it belongs to current user).
+
+    Defined as a sync def on purpose: the discovery fetches several web pages and can
+    take a couple of minutes, so FastAPI runs it in the worker thread pool instead of
+    blocking the event loop.
+    """
+    user = get_user_from_request(request)
+    user_id = user["user_id"]
+
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.user_id == user_id
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    return find_alternate_links(product_id)
 
 
 @app.post("/api/check-all")

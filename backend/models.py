@@ -43,6 +43,9 @@ class Product(Base):
     # Alternative price source URLs (JSON array of strings, e.g., '["https://...", "..."]')
     alternative_urls = Column(Text, nullable=True)
 
+    # Whether the scheduled alternate-link discovery may add/update alternative_urls for this product
+    auto_alternate_links = Column(Boolean, default=True)
+
     # Relationships
     user = relationship("User", back_populates="products")
     price_history = relationship("PriceEntry", back_populates="product", cascade="all, delete-orphan")

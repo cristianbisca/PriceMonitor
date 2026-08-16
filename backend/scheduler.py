@@ -12,6 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from database import SessionLocal
 from models import Product, PriceEntry, User
+from alternate_links import scheduled_alternate_discovery
 from price_checker import check_product_price, run_all_price_checks
 from telegram_notifier import (
     is_configured,
@@ -173,13 +174,9 @@ def scheduled_price_check():
     logger.info(f"=== Price check completed. Results: {results} ===")
 
 
-def init_scheduler():
-    """Initialize the scheduler with configured times."""
-    # Parse check times from environment variables
-    # Default: 9:00 AM and 2:00 PM
-    check_times = os.getenv("PRICE_CHECK_TIMES", "09:00,14:00").split(",")
-
-    for time_str in check_times:
+def _parse_check_times(raw: str):
+    """Yield valid (time_str, hour, minute) tuples from a comma-separated HH:MM list."""
+    for time_str in raw.split(","):
         time_str = time_str.strip()
         if ":" not in time_str:
             continue
@@ -190,19 +187,43 @@ def init_scheduler():
             minute_int = int(minute)
             if not (0 <= hour_int <= 23 and 0 <= minute_int <= 59):
                 raise ValueError("Invalid time")
-
-            trigger = CronTrigger(hour=hour_int, minute=minute_int)
-            scheduler.add_job(
-                scheduled_price_check,
-                trigger=trigger,
-                id=f"price_check_{hour_int}_{minute_int}",
-                name=f"Price check at {time_str}",
-                replace_existing=True,
-            )
-            logger.info(f"Scheduled price check at {time_str}")
-
+            yield time_str, hour_int, minute_int
         except ValueError as e:
             logger.error(f"Invalid check time '{time_str}': {e}")
+
+
+def init_scheduler():
+    """Initialize the scheduler with configured times."""
+    # Parse check times from environment variables
+    # Default: 9:00 AM and 2:00 PM
+    check_times = os.getenv("PRICE_CHECK_TIMES", "09:00,14:00")
+
+    for time_str, hour_int, minute_int in _parse_check_times(check_times):
+        scheduler.add_job(
+            scheduled_price_check,
+            trigger=CronTrigger(hour=hour_int, minute=minute_int),
+            id=f"price_check_{hour_int}_{minute_int}",
+            name=f"Price check at {time_str}",
+            replace_existing=True,
+        )
+        logger.info(f"Scheduled price check at {time_str}")
+
+    # Alternate-link discovery schedule (empty = feature disabled)
+    alternate_link_times = os.getenv("ALTERNATE_LINK_TIMES", "").strip()
+    if alternate_link_times:
+        for time_str, hour_int, minute_int in _parse_check_times(alternate_link_times):
+            scheduler.add_job(
+                scheduled_alternate_discovery,
+                trigger=CronTrigger(hour=hour_int, minute=minute_int),
+                id=f"alternate_links_{hour_int}_{minute_int}",
+                name=f"Alternate link discovery at {time_str}",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(f"Scheduled alternate link discovery at {time_str}")
+    else:
+        logger.info("Alternate link discovery disabled (ALTERNATE_LINK_TIMES not set)")
 
     # Start the scheduler
     if not scheduler.running:
