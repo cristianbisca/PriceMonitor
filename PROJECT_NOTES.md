@@ -10,6 +10,7 @@ A **multi-user web application** that monitors e-commerce product prices. It:
 - Checks prices on a schedule (default 09:00 & 14:00, TZ-aware)
 - Records full price history per product
 - Tracks all-time minimums
+- **Current price = the cheapest price across all sources at the time of the last check** (the minimum of one check run, which records one entry per source). **Minimum price = all-time minimum** (lowest of every price ever recorded). Notifications are based on the current-price logic.
 - Supports **alternative price sources** per product (extra URLs checked alongside the main one; each recorded entry is tagged with its source domain and plotted as a separate colored line on the graph)
 - **Auto-discovers alternative links**: finds the product's globally unique code (EAN/GTIN/UPC or ASIN), web-searches other stores in the same country domain suffix, verifies the code on each candidate page, and keeps the cheapest confirmed links (see §7)
 - Sends **Telegram** notifications on price drops / new minimums / first check
@@ -62,8 +63,8 @@ User (id, username, password_hash, created_at,
   └── Product (id, user_id, name, url, price_field, currency, enabled,
                created_at, updated_at, scraper_type, custom_selector,
                alternative_urls, auto_alternate_links)
-        └── PriceEntry (id, product_id, price, currency, checked_at,
-                        is_minimum, source, raw_html)
+         └── PriceEntry (id, product_id, price, currency, checked_at,
+                         is_minimum, source, check_cycle, raw_html)
 
 TelegramNotification (id, product_id, entry_id, chat_id, message_type,
                       sent_at, message_text)          # DEAD CODE — defined, never used
@@ -73,7 +74,7 @@ AppSettings (id, key, value)                          # DEAD CODE — defined, n
 - **`User`** — owns products; stores per-user Telegram settings (chat ID + enable toggle).
 - **`Product`** — `scraper_type` is `"auto"` (default) or `"custom"`; `custom_selector` holds a user CSS selector when `scraper_type == "custom"`. `enabled` gates scheduled checks. `price_field` is a legacy hint column (unused by the current extraction logic). URL is unique per user (`uq_user_url`). `alternative_urls` stores extra product URLs as a **JSON array of strings** in a `Text` column (e.g. `'["https://emag.ro/...", "https://amazon.de/..."]'`); `None` when empty. The API layer parses it to/from a list (`_parse_alternative_urls`) and validates entries on create/update (must be http(s), no duplicates of the main URL or each other, trailing-slash-insensitive).
 - **`Product.auto_alternate_links`** — per-product toggle (default `True`): allows the scheduled alternate-link discovery to read/write this product's `alternative_urls`. Toggled by the "Auto find alternate links" checkbox in the add/edit forms (checked by default).
-- **`PriceEntry`** — one row per check **per source**. `is_minimum` = True when this price is lower than every previously recorded price for the product. `source` holds the main domain of the URL the price came from (e.g. `"notino.ro"`, via `_extract_main_domain()`); NULL on legacy rows predating the column — the API falls back to the product's main domain when building chart data. `checked_at` stored as UTC. `raw_html` is a `Text` column (comment says "for debugging/retries") but is **never populated** — `check_product_price()` creates the entry without it. Dead column.
+- **`PriceEntry`** — one row per check **per source**. `is_minimum` = True when this price is lower than every previously recorded price for the product. `source` holds the main domain of the URL the price came from (e.g. `"notino.ro"`, via `_extract_main_domain()`); NULL on legacy rows predating the column — the API falls back to the product's main domain when building chart data. `check_cycle` is the **grouping key for a check run**: every source recorded in a single `check_product_price()` call shares one `check_cycle` UTC timestamp (and the same `checked_at`). **Current price = `MIN(price)` of the latest `check_cycle`** (cheapest source at the last check); **minimum price = `MIN(price)` over all rows** (all-time). NULL `check_cycle` on legacy rows predating the column — the API/notification logic falls back (see §6, §8). `checked_at` stored as UTC. `raw_html` is a `Text` column (comment says "for debugging/retries") but is **never populated** — `check_product_price()` creates the entry without it. Dead column.
 - **`TelegramNotification`** — defined to track sent notifications (avoid duplicates) but **never referenced** anywhere in the codebase. Dead code.
 - **`AppSettings`** — defined as a key/value store but **never referenced** anywhere in the codebase. Dead code.
 
@@ -96,7 +97,9 @@ AppSettings (id, key, value)                          # DEAD CODE — defined, n
 1. Load product; build the source list: main URL first, then each alternative URL from `_get_alternative_urls()` (JSON array parsed defensively — malformed JSON logs a warning and yields `[]`). Duplicates are dropped on trailing-slash-normalized URLs. Each source is labeled with its main domain (`_extract_main_domain`, strips `www.`).
 2. For each source: fetch HTML via `_fetch_page()`. If `scraper_type == "custom"` and `custom_selector` set → use that selector; otherwise → `extract_price_auto(html, url)`. A failing/price-less source is skipped (logged), never aborting the other sources.
 3. Compute `is_minimum` against the running global minimum across all sources seen so far this cycle (and everything recorded before it). Note: in a first-ever check cycle both the baseline entry and any lower subsequent entry are flagged — same semantics as the original single-source design.
-4. Insert one `PriceEntry` per successful source (tagged with its `source` domain), commit, and return a **plain `PriceCheckResult` dataclass** (not the ORM object — avoids `DetachedInstanceError` once the function's session closes). The returned result is the first recorded source (main URL when it succeeds).
+4. Insert one `PriceEntry` per successful source (tagged with its `source` domain), commit, and return a **plain `PriceCheckResult` dataclass** (not the ORM object — avoids `DetachedInstanceError` once the function's session closes).
+
+All entries from one run share a single `check_cycle` timestamp (computed once at the start of the call, also used as `checked_at`), which groups the run into a "check cycle". The returned result describes the cycle: `price` = the **cycle minimum** (cheapest successful source = the product's current price after the check), `source` = the source that had that cheapest price, `is_minimum` = True when the cycle minimum is a new all-time minimum, `checked_at` = the cycle timestamp.
 
 ### `_fetch_page()` — bot-wall evasion
 Tries `curl_cffi` with browser impersonation (`chrome124`, `chrome120`, `safari17_0`) to get past
@@ -149,11 +152,13 @@ Finds other stores selling the **same product** and stores the cheapest of them 
 - `scheduled_price_check()` is **global**: checks **all** enabled products across **all** users, then dispatches notifications per product.
 - `scheduled_alternate_discovery()` runs `find_alternate_links()` (see §7) for every **enabled** product whose `auto_alternate_links` is True, logging a per-product summary.
 
-### Notification dispatch (`_send_notifications_for_entry`)
-For each successfully-checked product, determines type by history:
-- **First price** (only 1 entry) → `send_first_price_notification`
-- **New minimum** (`entry.is_minimum`) → `send_new_minimum_notification` (includes old min)
-- **Price drop** (current < last checked) → `send_price_drop_notification`
+### Notification dispatch (`_send_notifications_for_product`)
+Called once per successfully-checked product (from `scheduled_price_check`). Everything is based on the **current price** = `MIN(price)` of the latest `check_cycle` (cheapest source at the last check). It loads all entries, finds the latest `check_cycle`, and splits rows into this cycle vs. everything before it:
+- **First price** (no entries recorded before this cycle) → `send_first_price_notification` (price = current price)
+- **New minimum** (current price < min over all previously recorded rows, i.e. a new all-time low) → `send_new_minimum_notification` (old min = previous all-time minimum)
+- **Price drop** (current price < the previous check cycle's current price, and not a new minimum) → `send_price_drop_notification` (old price = previous cycle's current price)
+
+Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle stamps to compare a previous current price from, only suppress the drop case.
 
 ### `telegram_notifier.py`
 - `is_configured()` = bot token present (chat ID is now per-user, not global).
@@ -165,14 +170,13 @@ For each successfully-checked product, determines type by history:
 ## 9. Charts (`graph_generator.py`)
 - `generate_price_chart()` — single-product history line chart, **one line per source domain**: the chronologically-first source keeps the primary blue and gets the area fill; alternatives get distinct colors (amber/green/purple/…) from a fixed palette. Each line is labeled with its main domain in the legend. Current-price + change annotations per source; stats box (max/avg). **No minimum-price markers** — min stars, min horizontal line, and the "Min:" annotation were removed on request (the frontend Chart.js chart likewise has no Minimum Price dataset). Returns base64 PNG. Entries without `source` (legacy rows) fall back to `'Price'`.
 - `generate_comparison_chart()` — multi-product overlay.
-- `get_price_statistics()` — min/max/avg/current/first/change/change_percent/total_checks.
+- `get_price_statistics()` — min/max/avg/current/first/change/change_percent/total_checks. `current` = min of the latest `check_cycle` (cheapest source at the last check); falls back to the last entry for legacy rows without cycle stamps. `min` is the all-time minimum.
 - **Timezone gotcha:** `_convert_to_local_time()` converts UTC → local TZ then **strips tzinfo** (returns naive) so matplotlib doesn't double-apply UTC conversion. `plt.rcParams['timezone']` set from `TZ` env.
 
 ## 10. Known Drift / Gotchas (verified against code)
 - **README §"Price Extraction Strategies" is outdated** — it lists only JSON-LD, meta, CSS, microdata. The actual code has 7 strategies with embedded-JSON and data-testid *ahead* of JSON-LD, plus Amazon-specific handling.
 - **`auth.py` `require_auth()` is dead code** — it references `HTTPException`, which is **not imported** in `auth.py` (only `Request` and `JSONResponse` are). It would raise `NameError` if called, but it's never used: `api.py` imports `get_current_user` (not `require_auth`) and authenticates via `get_user_from_request()` reading `request.state.user` (set by `AuthMiddleware`). Latent bug, never triggered.
 - **Passwords use unsalted SHA-256** — fine for a personal tool, not for production multi-tenant use.
-- **`scheduler.py`** has a redundant/unused `last_price` computation (lines 106-111) before using `last_entry` (line 113) — dead code.
 - **`telegram_notifier.py`** `send_message()` has an unreachable `return True` after `response.raise_for_status()` in the non-200 branch (lines 161-162). `raise_for_status()` raises `HTTPError`, caught by the `except requests.HTTPError` handler (returns `False`). So the `return True` is dead code; behavior is correct (returns `False` on HTTP error) but the line is misleading.
 - **`python-telegram-bot`** is in `requirements.txt` but **unused** — the notifier uses raw `requests` against the Bot API. Only the local `telegram_notifier` module is imported.
 - **Port inconsistency** — `Dockerfile` `EXPOSE 8000` + its `HEALTHCHECK` use port 8000, but `docker-compose.yml` sets `PORT=4300` and overrides the healthcheck to 4300. The app reads `PORT` env (default 8000 in `main.py`). Under compose the app runs on 4300 and the compose healthcheck (4300) works. If you run the image standalone with `PORT=4300`, the Dockerfile's built-in healthcheck (8000) would fail. EXPOSE is cosmetic; the real port is whatever `PORT` is set to.
@@ -181,7 +185,7 @@ For each successfully-checked product, determines type by history:
 - **`run_all_price_checks()` is dead code** — defined in `price_checker.py` and imported in both `api.py` and `scheduler.py`, but **never called**. The scheduler uses its own `scheduled_price_check()` (which loops `check_product_price` per product and dispatches notifications), and the manual "check all" endpoint (`POST /api/check-all`) calls `check_product_price` directly. The unused import in `api.py`/`scheduler.py` is a leftover.
 - **`PriceEntry.raw_html` is a dead column** — declared in `models.py` but never assigned a value anywhere.
 - **`DATABASE_URL` default differs by layer** — the code fallback in `database.py` is `sqlite:///./price_monitor.db` (current working dir), but `.env`/`docker-compose.yml` override it to `sqlite:///data/price_monitor.db` (the `/app/data` volume). In practice the DB lives in `data/`.
-- **Auto-migration on startup** — `api.py` inspects the schema at startup and adds missing columns: `users.telegram_chat_id` / `users.telegram_notifications_enabled`, `products.alternative_urls TEXT`, `products.auto_alternate_links BOOLEAN DEFAULT 1`, and `price_history.source VARCHAR(255)`. Existing rows get NULL `source` (chart data falls back to the product's main domain) and default-1 `auto_alternate_links`.
+- **Auto-migration on startup** — `api.py` inspects the schema at startup and adds missing columns: `users.telegram_chat_id` / `users.telegram_notifications_enabled`, `products.alternative_urls TEXT`, `products.auto_alternate_links BOOLEAN DEFAULT 1`, `price_history.source VARCHAR(255)`, and `price_history.check_cycle DATETIME`. Existing rows get NULL `source` (chart data falls back to the product's main domain), default-1 `auto_alternate_links`, and NULL `check_cycle` (current-price lookups fall back to the latest entry; the next check starts proper cycles).
 
 ## 11. Configuration (env vars)
 
@@ -236,6 +240,6 @@ python main.py
 - Frontend is a **single HTML file** — no build tooling; keep changes self-contained in `index.html`.
 - All API calls from the frontend send `X-PM-Token` header (see the `apiFetch`-style helper in `index.html`).
 - New price-extraction heuristics: add a strategy function in `price_checker.py` and wire it into `extract_price_auto()` at the correct priority position; gate site-specific logic by host (like the Amazon check).
-- New notification types: add a sender in `telegram_notifier.py` + a branch in `scheduler._send_notifications_for_entry`.
+- New notification types: add a sender in `telegram_notifier.py` + a branch in `scheduler._send_notifications_for_product` (base every type on the current price = min of the latest `check_cycle`, per §8).
 - Extending alternate-link discovery (§7): new search engines go in the `_search_engines` generator; new aggregator exclusions go in `AGGREGATOR_HOSTS`. Never weaken the same-product proof in `_verify_candidate` (code present in URL/HTML + extractable price) — that's what stops wrong products from being saved.
 - Timezone-sensitive code: always convert via the `TZ` env and remember the naive-datetime requirement for matplotlib.

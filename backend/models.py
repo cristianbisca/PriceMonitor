@@ -67,6 +67,9 @@ class PriceEntry(Base):
     checked_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     is_minimum = Column(Boolean, default=False)  # True if this is the new minimum price
     source = Column(String(255), nullable=True)  # Main domain of the price source (e.g., "notino.ro")
+    # All entries recorded during the same check run share this timestamp, grouping them
+    # into a "check cycle". Current price = MIN(price) of the latest cycle. NULL on legacy rows.
+    check_cycle = Column(DateTime, nullable=True, index=True)
     raw_html = Column(Text, nullable=True)  # Stored for debugging/retries
 
     # Relationships

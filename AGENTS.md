@@ -51,7 +51,7 @@ PriceMonitor/
 
 ## Key flows
 
-- **Scheduled check** (`scheduler.scheduled_price_check`): all enabled products, all users → `price_checker.check_product_price(id)` per product (main URL + `alternative_urls`, one `PriceEntry` per successful source, tagged with `source` domain) → per-product Telegram dispatch (first price / new minimum / drop).
+- **Scheduled check** (`scheduler.scheduled_price_check`): all enabled products, all users → `price_checker.check_product_price(id)` per product (main URL + `alternative_urls`, one `PriceEntry` per successful source, tagged with `source` domain; all entries in a run share one `check_cycle` timestamp) → per-product Telegram dispatch (`_send_notifications_for_product`: first price / new minimum / drop). **Current price = min over all sources of the latest check cycle; minimum price = all-time min; notifications are based on the current price.**
 - **Alternate-link discovery** (`alternate_links.find_alternate_links`): extract EAN/GTIN/UPC (check-digit validated) or ASIN from page metadata or URL slug → web-search the exact code (DDG html/lite + Bing RSS/HTML), same country TLD suffix only, aggregators excluded → fetch each candidate and require the same code on the page + an extractable price → keep cheapest `ALTERNATE_LINKS_MAX` links. Triggered by `ALTERNATE_LINK_TIMES` schedule (products with `auto_alternate_links=True`) or the manual `find-alternates` endpoint / "🔎 Find Links" button.
 - **Chart**: `graph_generator.generate_price_chart` — one line per source domain (chronologically-first source = primary blue + area fill), UTC→local conversion via `TZ` with naive datetimes for matplotlib.
 
@@ -62,7 +62,7 @@ PriceMonitor/
 - **Per-user data isolation**: every product query filters by `user_id` from the token. New endpoints MUST enforce this.
 - **Timezones**: store UTC in the DB; convert with the `TZ` env for display. For matplotlib, convert then **strip tzinfo** (naive).
 - **New price-extraction heuristic**: add a strategy function in `price_checker.py` and wire it into `extract_price_auto()` at the right priority position; gate site-specific logic by host (like the Amazon check).
-- **New notification type**: sender in `telegram_notifier.py` + branch in `scheduler._send_notifications_for_entry`.
+- **New notification type**: sender in `telegram_notifier.py` + branch in `scheduler._send_notifications_for_product` (base it on the current price = min of the latest `check_cycle`).
 - **New extraction field on a model**: SQLAlchemy `create_all` doesn't alter existing tables — `api.py`'s startup hook only auto-migrates *specific known columns*. Add your column to that hook too.
 - Keep `README.md` and `PROJECT_NOTES.md` in sync when behavior changes (especially the API-surface and env-var tables).
 

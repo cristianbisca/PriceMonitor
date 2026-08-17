@@ -124,10 +124,16 @@ Each user configures their own Telegram notifications through the web interface:
 5. Enable notifications by toggling **"Enable Telegram Notifications"**
 6. Click **"Send Test Notification"** to verify everything works
 
+### How "current price" works
+
+A product can have several price sources (the main URL plus alternative stores). The **current price** is always the **cheapest price across all sources at the time of the last check** (the minimum of that check run). The **minimum price** shown for a product is the **all-time minimum** — the lowest of every price ever recorded.
+
 ### Notification Types
 
-- **🔻 Price Drop Alert** — Sent when the current price is lower than the last checked price
-- **🎉 NEW MINIMUM PRICE!** — Sent when a new all-time low price is detected
+All alerts are based on the current price (cheapest source at the last check):
+
+- **🔻 Price Drop Alert** — Sent when the current price is lower than the current price from the previous check
+- **🎉 NEW MINIMUM PRICE!** — Sent when the current price is a new all-time low
 - **✅ First Price Recorded** — Sent on the first successful check for a new product
 
 ## 🐳 Portainer Deployment

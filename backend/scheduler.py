@@ -53,8 +53,19 @@ def _get_user_chat_ids_for_product(product_id: int) -> List[str]:
         db.close()
 
 
-def _send_notifications_for_entry(product_id: int, entry: PriceEntry):
-    """Send Telegram notifications based on price change type."""
+def _send_notifications_for_product(product_id: int):
+    """Send Telegram notifications for a product just after a check run.
+
+    Everything is based on the product's **current price**: the minimum over all
+    sources checked in the latest check cycle (entries from one run share a
+    ``check_cycle`` timestamp).
+
+    - **First price**: no check cycles recorded before this one
+    - **New minimum**: current price < minimum over all previously recorded entries
+      (all-time minimum, i.e. the min of the per-check minimums)
+    - **Price drop**: current price < the previous check cycle's current price
+      (and it is not a new all-time minimum)
+    """
     if not is_configured():
         logger.info("Telegram not configured, skipping notification")
         return
@@ -70,58 +81,67 @@ def _send_notifications_for_entry(product_id: int, entry: PriceEntry):
             logger.info(f"No Telegram chat IDs configured for product {product_id} (user {product.user_id})")
             return
 
-        # Get all price entries for this product to determine notification type
         all_entries = (
             db.query(PriceEntry)
             .filter(PriceEntry.product_id == product_id)
             .order_by(PriceEntry.checked_at.asc())
             .all()
         )
+        if not all_entries:
+            return
 
-        if len(all_entries) == 1:
+        cycles = [e.check_cycle for e in all_entries if e.check_cycle is not None]
+        if not cycles:
+            # Legacy rows without cycle stamps: nothing reliable to compare against.
+            return
+        last_cycle = max(cycles)
+
+        # Current price = cheapest across all sources of the latest check cycle
+        current_price = min(e.price for e in all_entries if e.check_cycle == last_cycle)
+        prev_entries = [e for e in all_entries if e.check_cycle != last_cycle]
+
+        if not prev_entries:
             # First price check - send initial notification
             for chat_id in chat_ids:
                 send_first_price_notification(
                     product_name=product.name,
                     product_url=product.url,
-                    price=entry.price,
+                    price=current_price,
                     currency=product.currency,
                     chat_id=chat_id,
                 )
-        elif entry.is_minimum:
-            # New minimum price
-            prev_min = min(e.price for e in all_entries if e.id != entry.id)
+            return
+
+        prev_min = min(e.price for e in prev_entries)
+        if current_price < prev_min:
+            # New all-time minimum
             for chat_id in chat_ids:
                 send_new_minimum_notification(
                     product_name=product.name,
                     product_url=product.url,
                     old_min_price=prev_min,
-                    new_price=entry.price,
+                    new_price=current_price,
                     currency=product.currency,
                     chat_id=chat_id,
                 )
-        else:
-            # Check if price dropped compared to previous check
-            prev_entries = [e for e in all_entries if e.id != entry.id]
-            if prev_entries:
-                last_price = max(
-                    (e.price for e in prev_entries),
-                    key=lambda p: next(
-                        (e.checked_at for e in prev_entries if e.price == p), None
-                    ),
+            return
+
+        # Price drop: compare with the previous check cycle's current price
+        prev_cycles = [e.check_cycle for e in prev_entries if e.check_cycle is not None]
+        if not prev_cycles:
+            return
+        prev_cycle = max(prev_cycles)
+        prev_current = min(e.price for e in prev_entries if e.check_cycle == prev_cycle)
+        if current_price < prev_current:
+            for chat_id in chat_ids:
+                send_price_drop_notification(
+                    product_name=product.name,
+                    product_url=product.url,
+                    old_price=prev_current,
+                    new_price=current_price,
+                    currency=product.currency,
+                    chat_id=chat_id,
                 )
-                # Get the actual last entry by date
-                last_entry = max(prev_entries, key=lambda e: e.checked_at)
-                if entry.price < last_entry.price:
-                    for chat_id in chat_ids:
-                        send_price_drop_notification(
-                            product_name=product.name,
-                            product_url=product.url,
-                            old_price=last_entry.price,
-                            new_price=entry.price,
-                            currency=product.currency,
-                            chat_id=chat_id,
-                        )
 
     except Exception as e:
         logger.error(f"Error sending notifications: {e}")
@@ -157,19 +177,8 @@ def scheduled_price_check():
 
     for result in results:
         if result["success"]:
-            # Trigger notification for this product
-            db = SessionLocal()
-            try:
-                entry = (
-                    db.query(PriceEntry)
-                    .filter(PriceEntry.product_id == result["product_id"])
-                    .order_by(PriceEntry.checked_at.desc())
-                    .first()
-                )
-                if entry:
-                    _send_notifications_for_entry(result["product_id"], entry)
-            finally:
-                db.close()
+            # Trigger notification for this product (based on the cycle-min current price)
+            _send_notifications_for_product(result["product_id"])
 
     logger.info(f"=== Price check completed. Results: {results} ===")
 

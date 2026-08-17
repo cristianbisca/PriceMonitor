@@ -1242,7 +1242,8 @@
                 try {
                     const result = await window.api('POST', '/api/products/' + id + '/check');
                     if (result.success) {
-                        showToast(result.is_minimum ? 'New minimum price found!' : 'Price: ' + formatPrice(result.price), 'success');
+                        const src = result.source ? ' (via ' + result.source + ')' : '';
+                        showToast((result.is_minimum ? 'New minimum price found!' : 'Price: ' + formatPrice(result.price)) + src, 'success');
                     } else {
                         showToast(result.message || 'Could not extract price', 'error');
                     }

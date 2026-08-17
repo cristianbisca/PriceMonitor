@@ -160,6 +160,35 @@ def _extract_main_domain(url: str) -> str:
         return url
 
 
+def _get_current_price(db: Session, product_id: int) -> Optional[float]:
+    """Get the product's current price: the minimum over all sources checked in the
+    latest check cycle (entries share a ``check_cycle`` timestamp per check run).
+
+    Falls back to the most recent single entry for legacy products that have not been
+    checked since the check_cycle column existed.
+    """
+    row = (
+        db.query(PriceEntry.check_cycle, func.min(PriceEntry.price))
+        .filter(
+            PriceEntry.product_id == product_id,
+            PriceEntry.check_cycle.isnot(None),
+        )
+        .group_by(PriceEntry.check_cycle)
+        .order_by(PriceEntry.check_cycle.desc())
+        .first()
+    )
+    if row is not None:
+        return row[1]
+
+    latest = (
+        db.query(PriceEntry)
+        .filter(PriceEntry.product_id == product_id)
+        .order_by(PriceEntry.checked_at.desc(), PriceEntry.id.desc())
+        .first()
+    )
+    return latest.price if latest else None
+
+
 def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
     """Ensure a datetime has UTC timezone info.
 
@@ -261,6 +290,9 @@ async def startup():
             if "source" not in history_cols:
                 conn.execute(text("ALTER TABLE price_history ADD COLUMN source VARCHAR(255)"))
                 logger.info("Added column source to price_history table")
+            if "check_cycle" not in history_cols:
+                conn.execute(text("ALTER TABLE price_history ADD COLUMN check_cycle DATETIME"))
+                logger.info("Added column check_cycle to price_history table")
 
     # Log Telegram configuration status
     _log_configuration_status()
@@ -450,13 +482,8 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
 
         min_p, max_p, avg_p, count = stats if stats else (None, None, None, 0)
 
-        # Get current price (latest entry)
-        latest = (
-            db.query(PriceEntry)
-            .filter(PriceEntry.product_id == product.id)
-            .order_by(PriceEntry.checked_at.desc())
-            .first()
-        )
+        # Current price = minimum over all sources checked in the latest check cycle
+        current_price = _get_current_price(db, product.id)
 
         result.append(ProductDetailResponse(
             id=product.id,
@@ -471,7 +498,7 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
             auto_alternate_links=bool(product.auto_alternate_links),
             created_at=product.created_at,
             updated_at=product.updated_at,
-            current_price=latest.price if latest else None,
+            current_price=current_price,
             min_price=min_p,
             max_price=max_p,
             avg_price=avg_p,
@@ -572,12 +599,8 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
     )
     min_p, max_p, avg_p, count = stats if stats else (None, None, None, 0)
 
-    latest = (
-        db.query(PriceEntry)
-        .filter(PriceEntry.product_id == product_id)
-        .order_by(PriceEntry.checked_at.desc())
-        .first()
-    )
+    # Current price = minimum over all sources checked in the latest check cycle
+    current_price = _get_current_price(db, product_id)
 
     return ProductDetailResponse(
         id=product.id,
@@ -592,7 +615,7 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
         auto_alternate_links=bool(product.auto_alternate_links),
         created_at=product.created_at,
         updated_at=product.updated_at,
-        current_price=latest.price if latest else None,
+        current_price=current_price,
         min_price=min_p,
         max_price=max_p,
         avg_price=avg_p,
@@ -753,6 +776,7 @@ async def check_product_now(product_id: int, request: Request, db: Session = Dep
             "price": entry.price,
             "currency": entry.currency,
             "is_minimum": entry.is_minimum,
+            "source": entry.source,
             "checked_at": entry.checked_at.isoformat(),
         }
     else:
@@ -897,6 +921,7 @@ async def get_price_statistics_endpoint(product_id: int, request: Request, db: S
             "checked_at": e.checked_at,
             "is_minimum": e.is_minimum,
             "source": e.source or main_domain,
+            "check_cycle": e.check_cycle,
         }
         for e in entries
     ]

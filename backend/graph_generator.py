@@ -256,17 +256,30 @@ def generate_comparison_chart(
 
 
 def get_price_statistics(price_history: List[Dict[str, any]]) -> Dict[str, float]:
-    """Calculate price statistics from history."""
+    """Calculate price statistics from history.
+
+    ``current`` is the product's current price: the minimum over all sources checked in
+    the latest check cycle (entries from one check run share a ``check_cycle`` timestamp).
+    For legacy history without cycle stamps it falls back to the most recent entry.
+    """
     if not price_history:
         return {}
 
     prices = [entry['price'] for entry in price_history]
+    cycles = [entry.get('check_cycle') for entry in price_history]
+
+    stamped = [c for c in cycles if c is not None]
+    if stamped:
+        last_cycle = max(stamped)
+        current = min(p for p, c in zip(prices, cycles) if c == last_cycle)
+    else:
+        current = prices[-1]
 
     return {
         'min': min(prices),
         'max': max(prices),
         'avg': sum(prices) / len(prices),
-        'current': prices[-1],
+        'current': current,
         'first': prices[0],
         'change': prices[-1] - prices[0],
         'change_percent': ((prices[-1] - prices[0]) / prices[0]) * 100 if prices[0] else 0,

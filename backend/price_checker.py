@@ -27,12 +27,18 @@ class PriceCheckResult:
     Returned by :func:`check_product_price` instead of a live ORM object so callers can
     safely read its fields after the function's internal session has been closed (avoids
     ``DetachedInstanceError`` when accessing attributes on a detached PriceEntry).
+
+    ``price`` is the product's **current price** for the finished check run: the minimum
+    over all successfully checked sources in this cycle. ``is_minimum`` is True when that
+    current price beat every previously recorded price (new all-time minimum).
+    ``source`` is the domain of the source that had the cheapest price this cycle.
     """
     product_id: int
     price: float
     currency: str
     is_minimum: bool
     checked_at: datetime
+    source: Optional[str] = None
 
 # Common price patterns found in web pages
 PRICE_PATTERNS = [
@@ -567,10 +573,15 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
     and record one PriceEntry per successfully checked source. Each entry is tagged
     with `source` = main domain of the URL it came from (e.g., "notino.ro").
 
-    Returns a :class:`PriceCheckResult` for the first successfully recorded price
-    (the main URL when it succeeds, otherwise the first successful alternative), or
-    None if no price could be extracted anywhere. The result is plain data (not an ORM
-    object) so callers can read its fields safely after this function's session closes.
+    All entries from this run share one ``check_cycle`` timestamp, grouping them into a
+    single "check cycle". The product's **current price** after the run is the minimum
+    over all sources in that cycle (the cheapest place to buy it as of this check).
+
+    Returns a :class:`PriceCheckResult` describing the cycle — ``price`` is that cycle
+    minimum, ``is_minimum`` is True when it is a new all-time minimum, ``source`` is the
+    source that had the cheapest price — or None if no price could be extracted anywhere.
+    The result is plain data (not an ORM object) so callers can read its fields safely
+    after this function's session closes.
     """
     db = SessionLocal()
     try:
@@ -596,7 +607,13 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
         ).order_by(PriceEntry.price.asc()).first()
         current_min = min_entry.price if min_entry else None
 
-        first_result: Optional[PriceCheckResult] = None
+        # One shared timestamp for every entry in this run: it both stamps checked_at and
+        # groups the entries into a check cycle (all sources checked "at the same time").
+        cycle_ts = datetime.now(timezone.utc)
+
+        cycle_min: Optional[float] = None
+        cycle_min_source: Optional[str] = None
+        cycle_is_new_minimum = False
 
         for url, source_label in sources_to_check:
             try:
@@ -614,26 +631,20 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
                 product_id=product_id,
                 price=price,
                 currency=product.currency,
-                checked_at=datetime.now(timezone.utc),
+                checked_at=cycle_ts,
                 is_minimum=is_minimum,
                 source=source_label,
+                check_cycle=cycle_ts,
             )
             db.add(entry)
             db.commit()
             db.refresh(entry)
 
-            # Capture plain values while the entry is still bound to a live session. A later
-            # commit in this loop would expire it again, and reading attributes after the
-            # session closes below would raise DetachedInstanceError.
-            if first_result is None:
-                first_result = PriceCheckResult(
-                    product_id=product_id,
-                    price=entry.price,
-                    currency=entry.currency,
-                    is_minimum=entry.is_minimum,
-                    checked_at=entry.checked_at,
-                )
-
+            if cycle_min is None or price < cycle_min:
+                cycle_min = price
+                cycle_min_source = source_label
+            if is_minimum:
+                cycle_is_new_minimum = True
             if current_min is None or price < current_min:
                 current_min = price
 
@@ -643,7 +654,17 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
                 f"{' (NEW MINIMUM!)' if is_minimum else ''}"
             )
 
-        return first_result
+        if cycle_min is None:
+            return None
+
+        return PriceCheckResult(
+            product_id=product_id,
+            price=cycle_min,
+            currency=product.currency,
+            is_minimum=cycle_is_new_minimum,
+            checked_at=cycle_ts,
+            source=cycle_min_source,
+        )
 
     except Exception as e:
         logger.error(f"Error checking price for product {product_id}: {e}")
