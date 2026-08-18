@@ -16,9 +16,11 @@ Pattern (same as HouseholdReplacementTracker):
   <db_dir>/backups/pm_pre_restore_YYYY-MM-DD_HHMMSS.sqlite, then the DB
   file is replaced. Set it back to false after a successful restore.
 
-The Dropbox API is called with plain `requests` (no SDK dependency):
-- https://api.dropboxapi.com/...      JSON endpoints
-- https://content.dropboxapi.com/...  upload/download (Dropbox-API-Arg header)
+The Dropbox API is called with plain `requests` (no SDK dependency), wire
+format matching dropbox SDK v11:
+- https://api.dropboxapi.com/...      arg as JSON request body
+- https://content.dropboxapi.com/...  Dropbox-API-Arg header
+  (octet-stream body for uploads)
 """
 
 import json
@@ -202,18 +204,28 @@ def _ensure_token() -> str:
 
 
 def _dropbox_post(base_url: str, endpoint: str, arg: dict, body: bytes = None) -> requests.Response:
-    """POST to a Dropbox API endpoint; refreshes the token once on 401/403."""
+    """POST to a Dropbox API endpoint; refreshes the token once on 401/403.
+
+    Wire format mirrors the official dropbox SDK v11: api.dropboxapi.com RPC
+    calls carry the arg as a JSON request body, content.dropboxapi.com calls
+    use the Dropbox-API-Arg header (octet-stream body for uploads).
+    """
     global _ACCESS_TOKEN
     last_error = "unknown error"
     for _ in range(2):
-        headers = {
-            "Authorization": f"Bearer {_ensure_token()}",
-            "Dropbox-API-Arg": json.dumps(arg),
-        }
-        if body is None:
+        headers = {"Authorization": f"Bearer {_ensure_token()}"}
+        if body is not None:
+            headers["Content-Type"] = "application/octet-stream"
+            headers["Dropbox-API-Arg"] = json.dumps(arg)
+            payload = body
+        elif base_url == CONTENT_URL:
+            headers["Dropbox-API-Arg"] = json.dumps(arg)
+            payload = None
+        else:
             headers["Content-Type"] = "application/json"
+            payload = json.dumps(arg)
         try:
-            response = requests.post(f"{base_url}/2/{endpoint}", headers=headers, data=body, timeout=REQUEST_TIMEOUT)
+            response = requests.post(f"{base_url}/2/{endpoint}", headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
         except requests.RequestException as e:
             raise DropboxError(f"Dropbox {endpoint} request failed: {e}")
 
