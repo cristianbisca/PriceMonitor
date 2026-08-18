@@ -10,7 +10,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: price-monitor
-    network_mode: host
+    ports:
+      - "13020:3000"
     environment:
       - TZ=${TZ:-Europe/Bucharest}
       - DATABASE_URL=${DATABASE_URL:-sqlite:///data/price_monitor.db}
@@ -18,7 +19,7 @@ services:
       - PRICE_CHECK_TIMES=${PRICE_CHECK_TIMES:-09:00,14:00}
       - ALTERNATE_LINK_TIMES=${ALTERNATE_LINK_TIMES:-}
       - ALTERNATE_LINKS_MAX=${ALTERNATE_LINKS_MAX:-3}
-      - PORT=4300
+      - PORT=3000
       - HOST=0.0.0.0
       - ENABLE_SIGNUP=${ENABLE_SIGNUP:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
@@ -34,7 +35,7 @@ services:
       - pricemonitor_data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4300/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

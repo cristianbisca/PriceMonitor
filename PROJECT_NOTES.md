@@ -51,7 +51,7 @@ PriceMonitor/
 │       ├── manifest.json    # PWA manifest
 │       └── icon-*.png       # PWA icons (16/32/192/512)
 ├── Dockerfile               # python:3.12-slim, installs matplotlib system deps, EXPOSE 8000
-├── docker-compose.yml       # Port 4300, network_mode: host, pricemonitor_data volume
+├── docker-compose.yml       # Port 13020→3000 mapping, pricemonitor_data volume
 ├── .env.example             # Env var template
 └── README.md                # User-facing docs (see §10 for known drift)
 ```
@@ -180,7 +180,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 - **Passwords use unsalted SHA-256** — fine for a personal tool, not for production multi-tenant use.
 - **`telegram_notifier.py`** `send_message()` has an unreachable `return True` after `response.raise_for_status()` in the non-200 branch (lines 161-162). `raise_for_status()` raises `HTTPError`, caught by the `except requests.HTTPError` handler (returns `False`). So the `return True` is dead code; behavior is correct (returns `False` on HTTP error) but the line is misleading.
 - **`python-telegram-bot`** is in `requirements.txt` but **unused** — the notifier uses raw `requests` against the Bot API. Only the local `telegram_notifier` module is imported.
-- **Port inconsistency** — `Dockerfile` `EXPOSE 8000` + its `HEALTHCHECK` use port 8000, but `docker-compose.yml` sets `PORT=4300` and overrides the healthcheck to 4300. The app reads `PORT` env (default 8000 in `main.py`). Under compose the app runs on 4300 and the compose healthcheck (4300) works. If you run the image standalone with `PORT=4300`, the Dockerfile's built-in healthcheck (8000) would fail. EXPOSE is cosmetic; the real port is whatever `PORT` is set to.
+- **Port inconsistency** — `Dockerfile` `EXPOSE 8000` + its `HEALTHCHECK` use port 8000, but `docker-compose.yml` sets `PORT=3000` (in-container), maps `13020:3000`, and overrides the healthcheck to 3000. The app reads `PORT` env (default 8000 in `main.py`). Under compose the app runs on 3000 inside the container (reachable from the host at 13020) and the compose healthcheck (3000) works. If you run the image standalone with `PORT=3000`, the Dockerfile's built-in healthcheck (8000) would fail. EXPOSE is cosmetic; the real port is whatever `PORT` is set to.
 - **`models.py`** defines `TelegramNotification` and `AppSettings` but **neither is referenced anywhere** in the codebase — dead code. The models actually in use are `User`, `Product`, `PriceEntry`.
 - **`.env.example` omits `TELEGRAM_CHAT_ID`** — intentional, since chat IDs are now per-user (set via the web settings page). The env var still works as a global fallback in `telegram_notifier.py` / `scheduler.py`.
 - **`run_all_price_checks()` is dead code** — defined in `price_checker.py` and imported in both `api.py` and `scheduler.py`, but **never called**. The scheduler uses its own `scheduled_price_check()` (which loops `check_product_price` per product and dispatches notifications), and the manual "check all" endpoint (`POST /api/check-all`) calls `check_product_price` directly. The unused import in `api.py`/`scheduler.py` is a leftover.
@@ -201,7 +201,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated 24h check times |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for scheduled alternate-link discovery (§7) |
 | `ALTERNATE_LINKS_MAX` | `3` | Max alternate links kept per product (min 1) |
-| `PORT` | `4300` | HTTP server port |
+| `PORT` | `3000` | HTTP server port (in-container) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new registrations |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -213,7 +213,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 | `BACKUP_SCHEDULE` | `0 2 * * *` | Cron expression for the scheduled backup (empty = disabled) |
 | `RESTORE_LATEST_BACKUP` | `false` | One-shot startup restore of the newest Dropbox backup (§15) |
 
-> Note: `TELEGRAM_CHAT_ID` is a global fallback only — it's not in `.env.example` because chat IDs are now per-user. `PORT` defaults to 8000 in `main.py` but compose/`.env` set it to 4300. Dropbox credentials are never exposed by the API (the status endpoint only reports configured/not).
+> Note: `TELEGRAM_CHAT_ID` is a global fallback only — it's not in `.env.example` because chat IDs are now per-user. `PORT` defaults to 8000 in `main.py` but compose/`.env` set it to 3000. Dropbox credentials are never exposed by the API (the status endpoint only reports configured/not).
 
 ## 12. API Surface (verified against `api.py`)
 
@@ -235,7 +235,7 @@ Note: `POST /api/products` runs an **initial price check immediately** (best-eff
 # Docker (recommended)
 cp .env.example .env   # edit as needed
 docker-compose up --build
-# → http://localhost:4300
+# → http://localhost:13020
 
 # Local dev (no Docker)
 cd backend

@@ -7,7 +7,7 @@ Read `PROJECT_NOTES.md` before making changes — it documents the architecture,
 ## Running it
 
 ```bash
-# Docker (recommended; http://localhost:4300)
+# Docker (recommended; http://localhost:13020)
 cp .env.example .env          # edit as needed
 docker-compose up --build
 
@@ -43,7 +43,7 @@ PriceMonitor/
 │       ├── manifest.json    # PWA manifest
 │       └── icon-*.png       # PWA icons (16/32/192/512)
 ├── Dockerfile               # python:3.12-slim, EXPOSE 8000 (cosmetic; real port = PORT env)
-├── docker-compose.yml       # Port 4300, network_mode: host, pricemonitor_data volume
+├── docker-compose.yml       # Port 13020→3000 mapping, pricemonitor_data volume
 ├── .env.example             # Env var template
 ├── AGENTS.md                # This file
 ├── PROJECT_NOTES.md         # Architecture & implementation details (the deep reference)
@@ -76,7 +76,7 @@ PriceMonitor/
 - **Unreachable line**: `telegram_notifier.send_message()` has `return True` after a `raise_for_status()` that always raises on that path — behavior is correct (returns False), line is misleading.
 - **Unused deps**: `python-telegram-bot` in `requirements.txt` (notifier uses raw `requests`).
 - **Passwords**: unsalted SHA-256 — fine for personal use, not production multi-tenant.
-- **Port inconsistency**: Dockerfile EXPOSE/healthcheck say 8000; compose forces `PORT=4300`. The real port is always the `PORT` env.
+- **Port inconsistency**: Dockerfile EXPOSE/healthcheck say 8000; compose sets `PORT=3000` and maps `13020:3000`. The real port is always the `PORT` env.
 - **`DATABASE_URL`** default differs by layer (code: `sqlite:///./price_monitor.db`; env/compose: `sqlite:///data/price_monitor.db` on the volume).
 - **`PRICE_PATTERNS`** in `price_checker.py` is a vestigial module-level list — extraction doesn't use it.
 - **Scraper types**: `scraper_type` is effectively only `"auto"` or `"custom"`; the comment listing "amazon", "ecommerce" etc. is aspirational.

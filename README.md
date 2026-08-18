@@ -63,7 +63,7 @@ A web application that monitors price changes for products across different e-co
 
 3. **Open the web interface:**
    ```
-   http://localhost:4300
+   http://localhost:13020
    ```
 
 4. **Register a new account** and start adding products to monitor.
@@ -88,7 +88,7 @@ python main.py
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for automatic alternate-link discovery |
 | `ALTERNATE_LINKS_MAX` | `3` | Max alternate links kept per product (min 1) |
-| `PORT` | `4300`* | HTTP server port (external) |
+| `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
@@ -102,7 +102,7 @@ python main.py
 | `BACKUP_SCHEDULE` | `0 2 * * *` | Cron expression for the scheduled backup (empty = disabled, runs daily at 02:00 by default) |
 | `RESTORE_LATEST_BACKUP` | `false` | One-shot: restore the newest Dropbox backup on the next startup (see below) |
 
-> \* In code the defaults are `PORT=8000` and `DATABASE_URL=sqlite:///./price_monitor.db`; the Docker Compose / `.env` values shown above (`4300` and `sqlite:///data/price_monitor.db`) are what apply in practice.
+> \* In code the defaults are `PORT=8000` and `DATABASE_URL=sqlite:///./price_monitor.db`; the Docker Compose / `.env` values shown above (`3000` and `sqlite:///data/price_monitor.db`) are what apply in practice.
 
 ### Authentication
 
@@ -251,7 +251,7 @@ If anything fails before the database file is replaced (bad credentials, no back
 ### Example: Register a User
 
 ```bash
-curl -X POST http://localhost:4300/api/auth/register \
+curl -X POST http://localhost:13020/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "username": "john_doe",
@@ -264,7 +264,7 @@ Response includes a token for immediate login.
 ### Example: Login
 
 ```bash
-curl -X POST http://localhost:4300/api/auth/login \
+curl -X POST http://localhost:13020/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "username": "john_doe",
@@ -275,7 +275,7 @@ curl -X POST http://localhost:4300/api/auth/login \
 ### Example: Add a Product (with token)
 
 ```bash
-curl -X POST http://localhost:4300/api/products \
+curl -X POST http://localhost:13020/api/products \
   -H "Content-Type: application/json" \
   -H "X-PM-Token: <your_token_here>" \
   -d '{
@@ -291,7 +291,7 @@ The server runs an initial price check right away (best-effort); the response in
 ### Example: Update Telegram Settings
 
 ```bash
-curl -X PUT http://localhost:4300/api/telegram/settings \
+curl -X PUT http://localhost:13020/api/telegram/settings \
   -H "Content-Type: application/json" \
   -H "X-PM-Token: <your_token_here>" \
   -d '{
@@ -303,7 +303,7 @@ curl -X PUT http://localhost:4300/api/telegram/settings \
 ### Example: Check Price Now
 
 ```bash
-curl -X POST http://localhost:4300/api/products/1/check \
+curl -X POST http://localhost:13020/api/products/1/check \
   -H "X-PM-Token: <your_token_here>"
 ```
 
