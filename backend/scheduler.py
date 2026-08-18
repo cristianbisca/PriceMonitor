@@ -13,6 +13,7 @@ from apscheduler.triggers.cron import CronTrigger
 from database import SessionLocal
 from models import Product, PriceEntry, User
 from alternate_links import scheduled_alternate_discovery
+from backup import perform_backup
 from price_checker import check_product_price, run_all_price_checks
 from telegram_notifier import (
     is_configured,
@@ -234,10 +235,46 @@ def init_scheduler():
     else:
         logger.info("Alternate link discovery disabled (ALTERNATE_LINK_TIMES not set)")
 
+    # Database backup schedule (standard cron expression from BACKUP_SCHEDULE)
+    if backup_schedule := os.getenv("BACKUP_SCHEDULE", "0 2 * * *").strip():
+        try:
+            backup_trigger = CronTrigger.from_crontab(backup_schedule)
+        except (TypeError, ValueError) as e:
+            logger.error(f"Invalid BACKUP_SCHEDULE '{backup_schedule}': {e}")
+        else:
+            scheduler.add_job(
+                scheduled_backup,
+                trigger=backup_trigger,
+                id="database_backup",
+                name=f"Database backup ({backup_schedule})",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(f"Scheduled database backup: {backup_schedule}")
+    else:
+        logger.info("Scheduled database backup disabled (BACKUP_SCHEDULE not set)")
+
     # Start the scheduler
     if not scheduler.running:
         scheduler.start()
         logger.info("Scheduler started")
+
+
+def scheduled_backup():
+    """Scheduled job: full database backup (local snapshot + Dropbox upload)."""
+    logger.info("=== Scheduled database backup started ===")
+    try:
+        result = perform_backup()
+        if result:
+            logger.info(
+                f"=== Scheduled database backup completed: {result['local']['filename']} "
+                f"(Dropbox: {'yes' if result['dropbox'] else 'no'}) ==="
+            )
+        else:
+            logger.info("=== Scheduled database backup skipped (BACKUP_ENABLED=false) ===")
+    except Exception as e:
+        logger.error(f"Scheduled database backup failed: {e}")
 
 
 def shutdown_scheduler():

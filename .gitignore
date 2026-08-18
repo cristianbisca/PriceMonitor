@@ -9,6 +9,7 @@ build/
 
 # Database
 *.db
+*.sqlite
 *.sqlite3
 data/
 
@@ -28,4 +29,5 @@ venv/
 Thumbs.db
 
 # Docker
-docker-compose.override.ymlnotino_raw.html
+docker-compose.override.yml
+notino_raw.html

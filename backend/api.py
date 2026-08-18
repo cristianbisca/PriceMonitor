@@ -45,6 +45,7 @@ from telegram_notifier import (
 )
 from scheduler import init_scheduler, shutdown_scheduler
 from auth import AuthMiddleware, hash_password, generate_token, get_current_user
+import backup
 
 import os
 
@@ -254,45 +255,86 @@ class LoginRequest(BaseModel):
 @app.on_event("startup")
 async def startup():
     """Initialize database and scheduler on startup."""
+    import shutil
+    from pathlib import Path
     from sqlalchemy import inspect, text
 
-    # Create tables
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database tables created/verified")
+    # ── One-shot restore from Dropbox (must happen BEFORE the DB is touched) ──
+    restore_result = None
+    if backup.RESTORE_LATEST_BACKUP:
+        logger.info("RESTORE_LATEST_BACKUP is set - restoring database from the newest Dropbox backup...")
+        try:
+            restore_result = backup.restore_latest_backup()
+        except Exception as e:
+            logger.error(f"Startup restore FAILED: {e} - the app will not start. "
+                         f"Fix the issue or set RESTORE_LATEST_BACKUP=false.")
+            raise
+        if restore_result:
+            logger.info(
+                f"Database restored from {restore_result['source']} "
+                f"({restore_result['user_count']} users, {restore_result['product_count']} products)"
+                + (f"; safety copy: {restore_result['safety_backup']}" if restore_result.get("safety_backup") else "")
+            )
 
-    # Auto-migrate: add telegram columns to users table if missing
-    inspector = inspect(engine)
-    if "users" in inspector.get_table_names():
-        existing_cols = {col["name"] for col in inspector.get_columns("users")}
-        with engine.begin() as conn:
-            if "telegram_chat_id" not in existing_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN telegram_chat_id VARCHAR(100)"))
-                logger.info("Added column telegram_chat_id to users table")
-            if "telegram_notifications_enabled" not in existing_cols:
-                conn.execute(text("ALTER TABLE users ADD COLUMN telegram_notifications_enabled BOOLEAN DEFAULT 0"))
-                logger.info("Added column telegram_notifications_enabled to users table")
+    def _init_schema():
+        # Create tables
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created/verified")
 
-    # Auto-migrate: add alternative_urls column to products table if missing
-    if "products" in inspector.get_table_names():
-        product_cols = {col["name"] for col in inspector.get_columns("products")}
-        with engine.begin() as conn:
-            if "alternative_urls" not in product_cols:
-                conn.execute(text("ALTER TABLE products ADD COLUMN alternative_urls TEXT"))
-                logger.info("Added column alternative_urls to products table")
-            if "auto_alternate_links" not in product_cols:
-                conn.execute(text("ALTER TABLE products ADD COLUMN auto_alternate_links BOOLEAN DEFAULT 1"))
-                logger.info("Added column auto_alternate_links to products table")
+        # Auto-migrate: add telegram columns to users table if missing
+        inspector = inspect(engine)
+        if "users" in inspector.get_table_names():
+            existing_cols = {col["name"] for col in inspector.get_columns("users")}
+            with engine.begin() as conn:
+                if "telegram_chat_id" not in existing_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN telegram_chat_id VARCHAR(100)"))
+                    logger.info("Added column telegram_chat_id to users table")
+                if "telegram_notifications_enabled" not in existing_cols:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN telegram_notifications_enabled BOOLEAN DEFAULT 0"))
+                    logger.info("Added column telegram_notifications_enabled to users table")
 
-    # Auto-migrate: add source column to price_history table if missing
-    if "price_history" in inspector.get_table_names():
-        history_cols = {col["name"] for col in inspector.get_columns("price_history")}
-        with engine.begin() as conn:
-            if "source" not in history_cols:
-                conn.execute(text("ALTER TABLE price_history ADD COLUMN source VARCHAR(255)"))
-                logger.info("Added column source to price_history table")
-            if "check_cycle" not in history_cols:
-                conn.execute(text("ALTER TABLE price_history ADD COLUMN check_cycle DATETIME"))
-                logger.info("Added column check_cycle to price_history table")
+        # Auto-migrate: add alternative_urls column to products table if missing
+        if "products" in inspector.get_table_names():
+            product_cols = {col["name"] for col in inspector.get_columns("products")}
+            with engine.begin() as conn:
+                if "alternative_urls" not in product_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN alternative_urls TEXT"))
+                    logger.info("Added column alternative_urls to products table")
+                if "auto_alternate_links" not in product_cols:
+                    conn.execute(text("ALTER TABLE products ADD COLUMN auto_alternate_links BOOLEAN DEFAULT 1"))
+                    logger.info("Added column auto_alternate_links to products table")
+
+        # Auto-migrate: add source column to price_history table if missing
+        if "price_history" in inspector.get_table_names():
+            history_cols = {col["name"] for col in inspector.get_columns("price_history")}
+            with engine.begin() as conn:
+                if "source" not in history_cols:
+                    conn.execute(text("ALTER TABLE price_history ADD COLUMN source VARCHAR(255)"))
+                    logger.info("Added column source to price_history table")
+                if "check_cycle" not in history_cols:
+                    conn.execute(text("ALTER TABLE price_history ADD COLUMN check_cycle DATETIME"))
+                    logger.info("Added column check_cycle to price_history table")
+
+    if restore_result:
+        # Schema init after a restore: roll back to the pre-restore safety copy
+        # (and retry) if the restored file turns out to be unusable
+        try:
+            _init_schema()
+        except Exception:
+            safety_path = Path(restore_result["safety_backup"]) if restore_result.get("safety_backup") else None
+            if safety_path and safety_path.exists():
+                logger.error(f"Schema init failed after restore - rolling back to safety copy {safety_path}")
+                engine.dispose()
+                shutil.copy2(safety_path, backup.get_db_path())
+                try:
+                    _init_schema()
+                except Exception:
+                    logger.critical("Rollback to the pre-restore safety copy failed - aborting startup")
+                    raise
+            else:
+                raise
+    else:
+        _init_schema()
 
     # Log Telegram configuration status
     _log_configuration_status()
@@ -1025,6 +1067,41 @@ async def test_telegram(request: Request):
         }
     finally:
         db.close()
+
+
+# ============ Backup & Restore (Dropbox) ============
+
+@app.get("/api/backup/status")
+async def backup_status():
+    """Backup feature status and configuration (no secrets included)."""
+    return {"success": True, "data": backup.get_status()}
+
+
+@app.post("/api/backup/run")
+def run_backup(request: Request):
+    """Trigger a database backup now (consistent local snapshot + Dropbox upload)."""
+    get_user_from_request(request)
+    try:
+        result = backup.perform_backup()
+        if result:
+            message = "Backup completed" + ("" if result["dropbox"] else " (local only - Dropbox not configured)")
+        else:
+            message = "Backup is disabled (BACKUP_ENABLED=false)"
+        return {"success": True, "data": result, "message": message}
+    except Exception as e:
+        logger.error(f"Manual backup failed: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@app.get("/api/backup/list")
+def list_backups_endpoint(request: Request):
+    """List local and Dropbox backups (newest first)."""
+    get_user_from_request(request)
+    try:
+        return {"success": True, "data": backup.list_backups()}
+    except Exception as e:
+        logger.error(f"Failed to list backups: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
 # ============ Frontend ============

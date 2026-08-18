@@ -41,7 +41,8 @@ PriceMonitor/
 │   ├── models.py            # ORM models: User, Product, PriceEntry
 │   ├── price_checker.py     # Page fetch + 7-tier price extraction strategy (multi-source aware)
 │   ├── alternate_links.py   # Alternate-link discovery (EAN/GTIN/UPC/ASIN matching, multi-engine web search)
-│   ├── scheduler.py         # APScheduler cron jobs; per-product notification dispatch; alternate-link schedule
+│   ├── scheduler.py         # APScheduler cron jobs; per-product notification dispatch; alternate-link schedule; backup schedule
+│   ├── backup.py            # Dropbox backup/restore: token refresh, snapshots, uploads, retention, boot-restore
 │   ├── telegram_notifier.py # Telegram Bot API message senders (per-user chat IDs)
 │   ├── graph_generator.py   # matplotlib price history / comparison charts → base64 PNG
 │   ├── requirements.txt
@@ -186,6 +187,8 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 - **`PriceEntry.raw_html` is a dead column** — declared in `models.py` but never assigned a value anywhere.
 - **`DATABASE_URL` default differs by layer** — the code fallback in `database.py` is `sqlite:///./price_monitor.db` (current working dir), but `.env`/`docker-compose.yml` override it to `sqlite:///data/price_monitor.db` (the `/app/data` volume). In practice the DB lives in `data/`.
 - **Auto-migration on startup** — `api.py` inspects the schema at startup and adds missing columns: `users.telegram_chat_id` / `users.telegram_notifications_enabled`, `products.alternative_urls TEXT`, `products.auto_alternate_links BOOLEAN DEFAULT 1`, `price_history.source VARCHAR(255)`, and `price_history.check_cycle DATETIME`. Existing rows get NULL `source` (chart data falls back to the product's main domain), default-1 `auto_alternate_links`, and NULL `check_cycle` (current-price lookups fall back to the latest entry; the next check starts proper cycles).
+- **`RESTORE_LATEST_BACKUP` is one-shot** — while set to `true`, the newest Dropbox backup overwrites the database on **every** startup (see §15). Set it, let it restore, then set it back to `false`. A failed restore (or a schema-init failure after restore with no usable safety copy) aborts startup.
+- **Backup snapshots use the SQLite online backup API** — `backup.py` never copies the `.db` file by hand; `sqlite3.Connection.backup()` is used so snapshots are consistent even while the app is writing. The physical DB path is parsed from `DATABASE_URL` (`make_url(...).database`); non-SQLite URLs are rejected (`BackupNotSupportedError`).
 
 ## 11. Configuration (env vars)
 
@@ -202,8 +205,15 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new registrations |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `BACKUP_ENABLED` | `true` | Enable/disable database backups (manual + scheduled) |
+| `BACKUP_DROPBOX_REFRESH_TOKEN` | *(empty)* | Dropbox OAuth2 refresh token (long-lived) |
+| `BACKUP_DROPBOX_APP_KEY` / `BACKUP_DROPBOX_APP_SECRET` | *(empty)* | Dropbox app credentials for token refresh |
+| `BACKUP_DROPBOX_FOLDER` | `/Backup` | Remote folder for backups |
+| `BACKUP_RETENTION_DAYS` | `30` | Prune local+remote backups older than N days |
+| `BACKUP_SCHEDULE` | `0 2 * * *` | Cron expression for the scheduled backup (empty = disabled) |
+| `RESTORE_LATEST_BACKUP` | `false` | One-shot startup restore of the newest Dropbox backup (§15) |
 
-> Note: `TELEGRAM_CHAT_ID` is a global fallback only — it's not in `.env.example` because chat IDs are now per-user. `PORT` defaults to 8000 in `main.py` but compose/`.env` set it to 4300.
+> Note: `TELEGRAM_CHAT_ID` is a global fallback only — it's not in `.env.example` because chat IDs are now per-user. `PORT` defaults to 8000 in `main.py` but compose/`.env` set it to 4300. Dropbox credentials are never exposed by the API (the status endpoint only reports configured/not).
 
 ## 12. API Surface (verified against `api.py`)
 
@@ -214,6 +224,8 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 Note: `POST /api/products` runs an **initial price check immediately** (best-effort; failure doesn't block creation) and the response includes `initial_check_success`, `initial_check_price`, `initial_check_message`.
 
 **Telegram:** `GET/PUT /api/telegram/settings`, `POST /api/telegram/test`
+
+**Backup:** `GET /api/backup/status` (config without secrets), `POST /api/backup/run` (manual backup now; sync `def` → thread pool), `GET /api/backup/list` (local + Dropbox, newest first). No runtime restore endpoint — restore is startup-only (see §15).
 
 **Config:** `GET /api/config/timezone`
 
@@ -243,3 +255,19 @@ python main.py
 - New notification types: add a sender in `telegram_notifier.py` + a branch in `scheduler._send_notifications_for_product` (base every type on the current price = min of the latest `check_cycle`, per §8).
 - Extending alternate-link discovery (§7): new search engines go in the `_search_engines` generator; new aggregator exclusions go in `AGGREGATOR_HOSTS`. Never weaken the same-product proof in `_verify_candidate` (code present in URL/HTML + extractable price) — that's what stops wrong products from being saved.
 - Timezone-sensitive code: always convert via the `TZ` env and remember the naive-datetime requirement for matplotlib.
+
+## 15. Dropbox Backup & Restore (`backup.py`)
+
+Backups of the whole SQLite database to Dropbox — same functional pattern as the HouseholdReplacementTracker app, re-implemented in Python (raw `requests` against the Dropbox HTTP API; **no SDK dependency**).
+
+- **Authentication:** long-lived OAuth2 **refresh token** + app key/secret (`BACKUP_DROPBOX_*`). `init_dropbox()` is called **lazily per operation** (never at import/startup): it guards on `BACKUP_ENABLED`/`RESTORE_LATEST_BACKUP` + credentials present, does a fresh `POST /oauth2/token` exchange, and verifies with `users/get_current_account` (logs account name/email, masked credentials in diagnostics). Returns a bool, never raises. `_dropbox_post()` caches the token for subsequent calls in the same operation and retries once with a refreshed token on 401/403.
+- **Endpoints:** `api.dropboxapi.com/2/...` (JSON: `files/list_folder` with cursor pagination, `files/delete_v2`, `users/get_current_account`) and `content.dropboxapi.com/2/...` (binary: `files/upload` with `Dropbox-API-Arg` header + JSON body args, `files/download` → raw bytes).
+- **Backup file naming:** `pm_backup_YYYY-MM-DD_HHMMSS.sqlite` (local time), stored in `<db_dir>/backups/` alongside the DB file (so with the default config they land on the `data/` volume). Upload mode is `overwrite`, `strict_conflict: false`; the remote folder is created implicitly by the Dropbox API.
+- **Snapshot:** `create_local_backup()` uses the **SQLite online backup API** (`sqlite3.connect(src).backup(dst)`) — a consistent copy even while the app is writing. Never a raw file copy.
+- **`perform_backup()`:** local snapshot → (if Dropbox initialized) upload → remote retention prune → local retention prune (always, even on Dropbox-only failure). Returns `{"local": {...}, "dropbox": metadata|None}` or `None` when `BACKUP_ENABLED=false`. Raises on failure (endpoint returns 500 `{success: false, error}`; the cron wrapper logs).
+- **Retention:** both remote and local `pm_backup_*` / `pm_pre_restore_*` files older than `BACKUP_RETENTION_DAYS` are deleted after each run (date parsed from the filename).
+- **Schedule:** `init_scheduler()` adds a `database_backup` job from the `BACKUP_SCHEDULE` cron expression (`CronTrigger.from_crontab`, standard 5-field crontab, scheduler timezone, `max_instances=1, coalesce=True`); invalid expressions are logged and skipped. `scheduled_backup()` wraps `perform_backup()` with logging (never raises).
+- **Startup restore (`RESTORE_LATEST_BACKUP=true`, one-shot):** at the top of `api.py`'s `startup()`, **before** `Base.metadata.create_all()`, `backup.restore_latest_backup()` runs: `init_dropbox()` (must succeed — otherwise startup aborts) → `find_newest_dropbox_backup()` (newest by `client_modified`) → download to `backups/_restore_temp.sqlite` → `validate_backup_sqlite()` (fresh standalone connection; requires `users`/`products`/`price_history` tables) → **safety copy** of the current DB via online backup to `backups/pm_pre_restore_*.sqlite` → `temp.replace(db_path)` → temp removed in `finally`. Any pre-replacement failure raises → **startup aborts** (container restarts). Because the engine has made no connections yet at that point, no `engine.dispose()` is needed on the normal path.
+- **Rollback:** the schema-init block (`create_all` + the known auto-migration ALTERs) was extracted to `_init_schema()` inside `startup()`. After a restore, if `_init_schema()` fails, the safety copy is copied back over the DB file, `engine.dispose()` drops pooled connections to the old (now stale) file, and `_init_schema()` retries once. Failure of the retry (or no safety copy) re-raises → startup aborts.
+- **UI:** settings view has a "Database Backup & Restore (Dropbox)" card — status rows (backup enabled/disabled, dropbox configured + folder, retention • schedule • active-restore warning), "Backup Now" and "Refresh Backup List" buttons, and a merged local+Dropbox list (top 20). Status is loaded once on first visit to the settings view (`loadBackupStatus`), the list re-merges newest-first with shared ISO timestamps.
+- **API shape:** `{"success": true, "data": ...}` on success; `500 {"success": false, "error": "..."}` on failure. `GET /api/backup/status` never includes secrets.

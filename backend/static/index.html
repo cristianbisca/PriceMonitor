@@ -571,6 +571,50 @@
                     5. Enable notifications and click "Send Test Notification" to verify it works
                 </p>
             </div>
+
+            <div class="settings-card">
+                <h2>☁️ Database Backup &amp; Restore (Dropbox)</h2>
+                <p class="description">A consistent snapshot of the whole database is saved locally and uploaded to Dropbox. Backups older than the retention period are pruned automatically.</p>
+
+                <!-- Backup state -->
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <h3>Backup</h3>
+                        <p id="backupStatusText">Checking...</p>
+                    </div>
+                    <span id="backupStatusIndicator" class="status-indicator status-disconnected">Unknown</span>
+                </div>
+
+                <!-- Dropbox state -->
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <h3>Dropbox</h3>
+                        <p id="dropboxStatusText">Checking...</p>
+                    </div>
+                    <span id="dropboxStatusIndicator" class="status-indicator status-disconnected">Unknown</span>
+                </div>
+
+                <!-- Retention & schedule -->
+                <div class="setting-row">
+                    <div class="setting-label">
+                        <h3>Retention &amp; Schedule</h3>
+                        <p id="backupScheduleText">-</p>
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="settings-actions">
+                    <button class="btn btn-success" onclick="backupNow()" id="backupNowBtn">
+                        📤 Backup Now
+                    </button>
+                    <button class="btn btn-secondary" onclick="loadBackupList()" id="backupListBtn">
+                        📋 Refresh Backup List
+                    </button>
+                </div>
+
+                <!-- Backup list -->
+                <div id="backupListContainer" style="margin-top: 20px;"></div>
+            </div>
         </div>
 
         <!-- Detail View -->
@@ -1363,6 +1407,7 @@
                 document.getElementById('listView').style.display = 'none';
                 document.getElementById('settingsView').classList.add('active');
                 await loadTelegramSettings();
+                loadBackupStatus();
                 // Push a history entry so the mobile back button returns to the list view
                 if (pushHistory) {
                     window.history.pushState({ view: 'settings' }, '');
@@ -1445,6 +1490,128 @@
                 } finally {
                     btn.disabled = false;
                     btn.textContent = '📱 Send Test Notification';
+                }
+            };
+
+            // ─── Backup & Restore (Dropbox) ─────────────────────────────
+            let backupStatusLoaded = false;
+
+            function formatBytes(bytes) {
+                if (!bytes && bytes !== 0) return '-';
+                if (bytes < 1024) return bytes + ' B';
+                if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+
+            function formatBackupDate(iso) {
+                if (!iso) return '-';
+                var tz = window.appTimezone || 'Europe/Bucharest';
+                try {
+                    return new Date(iso).toLocaleString('ro-RO', { timeZone: tz, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                } catch (e) {
+                    return iso;
+                }
+            }
+
+            function extractApiError(err) {
+                var msg = (err && err.message) || String(err);
+                try {
+                    var parsed = JSON.parse(msg);
+                    if (parsed && parsed.error) return parsed.error;
+                } catch (e) {}
+                return msg;
+            }
+
+            async function loadBackupStatus() {
+                if (backupStatusLoaded) return;
+                try {
+                    var res = await window.api('GET', '/api/backup/status');
+                    var s = res.data || {};
+                    var backupIndicator = document.getElementById('backupStatusIndicator');
+                    var backupText = document.getElementById('backupStatusText');
+                    if (s.enabled) {
+                        backupIndicator.className = 'status-indicator status-connected';
+                        backupIndicator.textContent = 'Enabled';
+                        backupText.textContent = (s.database && s.database.startsWith('unsupported: ')) ? 'Database not supported for backup: ' + s.database.substring(13) : 'Database: ' + (s.database || 'unknown');
+                    } else {
+                        backupIndicator.className = 'status-indicator status-disconnected';
+                        backupIndicator.textContent = 'Disabled';
+                        backupText.textContent = 'Backups are disabled (BACKUP_ENABLED=false)';
+                    }
+
+                    var dropboxIndicator = document.getElementById('dropboxStatusIndicator');
+                    var dropboxText = document.getElementById('dropboxStatusText');
+                    if (s.dropbox_configured) {
+                        dropboxIndicator.className = 'status-indicator status-connected';
+                        dropboxIndicator.textContent = 'Configured';
+                        dropboxText.textContent = 'Folder: ' + (s.dropbox_folder || '/Backup');
+                    } else {
+                        dropboxIndicator.className = 'status-indicator status-disconnected';
+                        dropboxIndicator.textContent = 'Not Configured';
+                        dropboxText.textContent = 'Set BACKUP_DROPBOX_REFRESH_TOKEN, BACKUP_DROPBOX_APP_KEY and BACKUP_DROPBOX_APP_SECRET to enable uploads (local backups still work)';
+                    }
+
+                    var parts = ['Kept for ' + s.retention_days + ' days'];
+                    if (s.schedule) parts.push('Scheduled: ' + s.schedule);
+                    if (s.restore_latest_backup) parts.push('Restore-on-startup is ACTIVE (restart to trigger, then set RESTORE_LATEST_BACKUP=false)');
+                    document.getElementById('backupScheduleText').textContent = parts.join('  •  ');
+
+                    backupStatusLoaded = true;
+                    loadBackupList();
+                } catch (err) {
+                    showToast('Failed to load backup status: ' + extractApiError(err), 'error');
+                }
+            }
+
+            window.backupNow = async function() {
+                var btn = document.getElementById('backupNowBtn');
+                btn.disabled = true;
+                btn.textContent = '⏳ Backing up...';
+
+                try {
+                    var res = await window.api('POST', '/api/backup/run');
+                    var d = res.data;
+                    if (!d) {
+                        showToast('Backup is disabled (BACKUP_ENABLED=false)', 'error');
+                    } else {
+                        var msg = 'Backup created: ' + d.local.filename + (d.dropbox ? ' (uploaded to Dropbox)' : ' (local only - Dropbox not configured)');
+                        showToast(msg, d.dropbox ? 'success' : 'info');
+                        loadBackupList();
+                    }
+                } catch (err) {
+                    showToast('Backup failed: ' + extractApiError(err), 'error');
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = '📤 Backup Now';
+                }
+            };
+
+            window.loadBackupList = async function() {
+                var container = document.getElementById('backupListContainer');
+                if (!container) return;
+                try {
+                    var res = await window.api('GET', '/api/backup/list');
+                    var d = res.data || {};
+                    var items = (d.dropbox || []).concat(d.local || []).sort(function(a, b) {
+                        return String(b.created || '').localeCompare(String(a.created || ''));
+                    });
+                    if (items.length === 0) {
+                        container.innerHTML = '<p class="description" style="margin-top: 0;">No backups yet - click "Backup Now" to create the first one.</p>';
+                        return;
+                    }
+                    var shown = items.slice(0, 20);
+                    var html = '<table class="history-table"><thead><tr><th>Backup</th><th>Location</th><th>Size</th><th>Date</th></tr></thead><tbody>';
+                    shown.forEach(function(item) {
+                        var location = item.location === 'dropbox' ? '☁️ dropbox' : '💾 local';
+                        html += '<tr><td>' + escapeHtml(item.name) + '</td><td>' + location + '</td><td>' + formatBytes(item.size) + '</td><td>' + formatBackupDate(item.created) + '</td></tr>';
+                    });
+                    html += '</tbody></table>';
+                    if (items.length > shown.length) {
+                        html += '<p class="description">Showing the ' + shown.length + ' most recent of ' + items.length + ' backups.</p>';
+                    }
+                    container.innerHTML = html;
+                } catch (err) {
+                    container.innerHTML = '<p class="description" style="margin-top: 0;">Could not load backup list: ' + escapeHtml(extractApiError(err)) + '</p>';
                 }
             };
 

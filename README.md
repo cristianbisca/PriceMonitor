@@ -16,6 +16,7 @@ A web application that monitors price changes for products across different e-co
 - **PWA Support** — Installable on Android with home screen icons
 - **Dark Theme UI** — Modern responsive web interface
 - **Sign-Up Control** — Admin can disable new registrations via `ENABLE_SIGNUP` env variable
+- **Database Backup & Restore** — Scheduled + manual database backups to Dropbox with retention cleanup, and one-shot restore from the newest backup
 - **Docker Deployment** — Ready for Portainer or docker-compose
 
 ## 🏗 Architecture
@@ -32,7 +33,8 @@ A web application that monitors price changes for products across different e-co
 │   ├── alternate_links.py  # Auto-discovers the same product on other stores (EAN/GTIN/UPC/ASIN)
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
 │   ├── telegram_notifier.py# Telegram bot notifications (per-user chat ID support)
-│   ├── scheduler.py        # APScheduler for periodic checks
+│   ├── scheduler.py        # APScheduler for periodic checks (price checks + database backup)
+│   ├── backup.py           # Dropbox database backup & restore
 │   ├── requirements.txt    # Python dependencies
 │   └── static/
 │       └── index.html      # Frontend SPA (Chart.js, vanilla JS, PWA manifest)
@@ -91,6 +93,14 @@ python main.py
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `TELEGRAM_CHAT_ID` | *(empty)* | Global fallback chat ID(s), comma-separated — used only when a user hasn't set their own via the web UI |
+| `BACKUP_ENABLED` | `true` | Enable/disable database backups |
+| `BACKUP_DROPBOX_REFRESH_TOKEN` | *(empty)* | Dropbox OAuth2 refresh token (see Backup Setup below) |
+| `BACKUP_DROPBOX_APP_KEY` | *(empty)* | Dropbox app key |
+| `BACKUP_DROPBOX_APP_SECRET` | *(empty)* | Dropbox app secret |
+| `BACKUP_DROPBOX_FOLDER` | `/Backup` | Dropbox folder where backups are stored |
+| `BACKUP_RETENTION_DAYS` | `30` | Delete backups older than this many days |
+| `BACKUP_SCHEDULE` | `0 2 * * *` | Cron expression for the scheduled backup (empty = disabled, runs daily at 02:00 by default) |
+| `RESTORE_LATEST_BACKUP` | `false` | One-shot: restore the newest Dropbox backup on the next startup (see below) |
 
 > \* In code the defaults are `PORT=8000` and `DATABASE_URL=sqlite:///./price_monitor.db`; the Docker Compose / `.env` values shown above (`4300` and `sqlite:///data/price_monitor.db`) are what apply in practice.
 
@@ -135,6 +145,43 @@ All alerts are based on the current price (cheapest source at the last check):
 - **🔻 Price Drop Alert** — Sent when the current price is lower than the current price from the previous check
 - **🎉 NEW MINIMUM PRICE!** — Sent when the current price is a new all-time low
 - **✅ First Price Recorded** — Sent on the first successful check for a new product
+
+## 📦 Backup & Restore (Dropbox)
+
+The whole database is backed up to Dropbox on a schedule and on demand, so the entire dataset (all users, products, and price history) can be moved or recovered.
+
+### Backup Setup (One-Time)
+
+1. Open [https://www.dropbox.com/developers/apps](https://www.dropbox.com/developers/apps) and click **Create app**
+2. Choose **App Folder** (or Full Dropbox) and select the **Files.content, files.metadata** scopes (read + write)
+3. In the app's **OAuth 2.0** settings, enable **Token refresh** and generate a long-lived **refresh token** (paste it once into your Dropbox session to link the app)
+4. Copy the **Access token / refresh token**, **App key**, and **App secret** into your `.env`:
+
+   ```
+   BACKUP_DROPBOX_REFRESH_TOKEN=...
+   BACKUP_DROPBOX_APP_KEY=...
+   BACKUP_DROPBOX_APP_SECRET=...
+   BACKUP_DROPBOX_FOLDER=/Backup    # optional
+   ```
+
+5. Restart the container — the app lazily refreshes a short-lived access token from the refresh token on every backup operation (the refresh token never expires as long as the app stays used), so no other maintenance is needed.
+
+### How Backups Work
+
+- A **consistent snapshot** of the SQLite database is written to `data/backups/pm_backup_YYYY-MM-DD_HHMMSS.sqlite` (next to the DB file, on the Docker volume) and uploaded to `BACKUP_DROPBOX_FOLDER` in Dropbox, overwriting any file with the same name.
+- The scheduled backup runs per `BACKUP_SCHEDULE` (cron expression, default daily at 02:00, server `TZ`); manual backups can be triggered at any time from **Settings → Database Backup & Restore → "Backup Now"** in the web UI (or `POST /api/backup/run`).
+- Backups older than `BACKUP_RETENTION_DAYS` (default 30) are automatically deleted from both Dropbox and the local `backups/` folder after each run.
+- If Dropbox isn't configured, backups are still created locally — the UI and logs say "local only".
+
+### Restoring a Backup
+
+Restores happen at **startup**, never while the app is running (the DB file is replaced before any connection is opened):
+
+1. Set `RESTORE_LATEST_BACKUP=true` in `.env`
+2. Restart the container — the newest Dropbox backup is downloaded, validated in a separate connection, a safety copy of the current database is saved as `data/backups/pm_pre_restore_*.sqlite`, and the current database file is replaced with the backup
+3. Set `RESTORE_LATEST_BACKUP=false` again (it runs on **every** startup while `true`)
+
+If anything fails before the database file is replaced (bad credentials, no backups found, corrupted backup file), the container **refuses to start** — the current database is left untouched. If the restored file turns out to be unusable right after the restore, the app automatically rolls back to the pre-restore safety copy.
 
 ## 🐳 Portainer Deployment
 
@@ -186,6 +233,14 @@ All alerts are based on the current price (cheapest source at the last check):
 | `GET` | `/api/telegram/settings` | Get current user's Telegram settings |
 | `PUT` | `/api/telegram/settings` | Update Telegram Chat ID and notification toggle |
 | `POST` | `/api/telegram/test` | Send test notification to user's chat |
+
+### Backup & Restore (Dropbox)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/backup/status` | Backup configuration & status (no secrets) |
+| `POST` | `/api/backup/run` | Trigger a database backup now (local snapshot + Dropbox upload) |
+| `GET` | `/api/backup/list` | List local and Dropbox backups (newest first) |
 
 ### Config
 
