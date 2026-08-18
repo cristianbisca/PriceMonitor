@@ -141,9 +141,11 @@ def refresh_access_token():
 
 
 def init_dropbox() -> bool:
-    """Lazily configure the Dropbox client: fresh token refresh + account check.
+    """Lazily configure the Dropbox client: token refresh + working verification.
 
-    Never raises. Returns True when the Dropbox client is usable.
+    Verification = best-effort account info + folder access probe (the account
+    endpoint is not reliable for every account type). Never raises. Returns
+    True when the Dropbox client is usable.
     """
     global _ACCESS_TOKEN
     _ACCESS_TOKEN = None
@@ -168,13 +170,21 @@ def init_dropbox() -> bool:
         return False
 
     try:
-        account = _dropbox_post(API_URL, "users/get_current_account", {})
+        account = _dropbox_post(API_URL, "users/get_current_account", {}).json()
         name = account.get("name", {}).get("display_name", "unknown")
         email = account.get("email", "no email")
         logger.info(f"[Backup] Dropbox connected: {name} ({email})")
+    except (DropboxError, requests.RequestException) as e:
+        # Account-type quirks (e.g. team accounts with a personal app) can make
+        # this endpoint fail while file access still works - probe the folder.
+        logger.warning(f"[Backup] Could not fetch Dropbox account info ({e}); verifying file access instead")
+
+    try:
+        ensure_dropbox_folder()
+        logger.info(f"[Backup] Dropbox backup folder verified: {DROPBOX_FOLDER}")
         return True
     except (DropboxError, requests.RequestException) as e:
-        logger.error(f"[Backup] Dropbox account verification failed: {e}")
+        logger.error(f"[Backup] Dropbox verification failed: no file access to {DROPBOX_FOLDER} ({e})")
         _ACCESS_TOKEN = None
         return False
 
@@ -218,6 +228,21 @@ def _dropbox_post(base_url: str, endpoint: str, arg: dict, body: bytes = None) -
 
 
 # ── Dropbox file operations ──────────────────────────────────────────────────
+
+def ensure_dropbox_folder() -> None:
+    """Make sure the remote backup folder exists, creating it on first run."""
+    try:
+        response = _dropbox_post(API_URL, "files/get_metadata", {"path": DROPBOX_FOLDER})
+    except DropboxError as e:
+        if "path_not_found" in str(e):
+            _dropbox_post(API_URL, "files/create_folder_v2", {"path": DROPBOX_FOLDER, ".tag": "auto"})
+            logger.info(f"[Backup] Created Dropbox backup folder {DROPBOX_FOLDER}")
+            return
+        raise
+    meta = response.json()
+    if meta.get(".tag") != "folder":
+        raise DropboxError(f"Dropbox path {DROPBOX_FOLDER} exists but is not a folder")
+
 
 def upload_to_dropbox(backup_path: Path, filename: str) -> dict:
     """Upload a local backup file to Dropbox (overwrite mode)."""
