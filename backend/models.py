@@ -43,12 +43,13 @@ class Product(Base):
     # Alternative price source URLs (JSON array of strings, e.g., '["https://...", "..."]')
     alternative_urls = Column(Text, nullable=True)
 
-    # Whether the scheduled alternate-link discovery may add/update alternative_urls for this product
+    # Whether the scheduled alternate-link discovery may scan this product and propose candidate links
     auto_alternate_links = Column(Boolean, default=True)
 
     # Relationships
     user = relationship("User", back_populates="products")
     price_history = relationship("PriceEntry", back_populates="product", cascade="all, delete-orphan")
+    link_candidates = relationship("LinkCandidate", back_populates="product", cascade="all, delete-orphan")
 
     # URL must be unique per user
     __table_args__ = (
@@ -74,6 +75,34 @@ class PriceEntry(Base):
 
     # Relationships
     product = relationship("Product", back_populates="price_history")
+
+
+class LinkCandidate(Base):
+    """A same-product link proposed by the discovery engine, awaiting user review.
+
+    Discovery no longer attaches links to the product directly: verified cheaper
+    candidates are stored here with status "pending" and shown in the UI, where the
+    user approves them (link is then appended to Product.alternative_urls) or
+    dismisses them (URL is never suggested again for that product).
+    """
+    __tablename__ = "link_candidates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    url = Column(String(2048), nullable=False)  # Candidate store URL (normalized, no trailing slash)
+    price = Column(Float, nullable=True)  # Price found on the candidate page at discovery time
+    match_method = Column(String(20), nullable=True)  # "code" (EAN/UPC/GTIN/ASIN), "model" (MPN/model no), "name"
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending / approved / dismissed
+    found_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    decided_at = Column(DateTime, nullable=True)  # Set when the user approves or dismisses
+
+    # Relationships
+    product = relationship("Product", back_populates="link_candidates")
+
+    # One candidate per URL per product (re-runs refresh the existing row)
+    __table_args__ = (
+        UniqueConstraint("product_id", "url", name="uq_candidate_product_url"),
+    )
 
 
 class TelegramNotification(Base):

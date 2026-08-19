@@ -551,6 +551,38 @@ def _get_alternative_urls(product: Product) -> list:
     return []
 
 
+def get_current_price(db, product_id: int) -> Optional[float]:
+    """Get the product's current price: the minimum over all sources checked in the
+    latest check cycle (entries from one run share a ``check_cycle`` timestamp).
+
+    Falls back to the most recent single entry for legacy products that have not been
+    checked since the check_cycle column existed. Returns None when no price was ever
+    recorded.
+    """
+    from sqlalchemy import func
+
+    row = (
+        db.query(PriceEntry.check_cycle, func.min(PriceEntry.price))
+        .filter(
+            PriceEntry.product_id == product_id,
+            PriceEntry.check_cycle.isnot(None),
+        )
+        .group_by(PriceEntry.check_cycle)
+        .order_by(PriceEntry.check_cycle.desc())
+        .first()
+    )
+    if row is not None:
+        return row[1]
+
+    latest = (
+        db.query(PriceEntry)
+        .filter(PriceEntry.product_id == product_id)
+        .order_by(PriceEntry.checked_at.desc(), PriceEntry.id.desc())
+        .first()
+    )
+    return latest.price if latest else None
+
+
 def _extract_price_for_url(product: Product, url: str) -> Optional[float]:
     """Fetch a single URL and extract the price using the product's scraper configuration."""
     # Fetch the page (browser-impersonated to get past bot walls like Amazon's)

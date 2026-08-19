@@ -8,7 +8,7 @@ A web application that monitors price changes for products across different e-co
 - **Per-User Data Isolation** — Each user has their own products, price history, and settings
 - **Product Management** — Add products by URL with auto-detect or custom CSS selector price extraction
 - **Multi-Source Price Comparison** — Each product can have alternative store URLs, checked alongside the main one and plotted as separate lines per store
-- **Automated Alternate-Link Discovery** — Find the same product on other stores via EAN/GTIN/UPC or ASIN web search (same country domain), with per-product on/off toggle and manual "Find Links" trigger
+- **Suggested Alternate Links (candidates)** — Finds the same product on other stores (same country domain) by product code (EAN/GTIN/UPC/ASIN), model number, or product name; suggested links are only candidates until you review them: cheaper ones are shown in the product detail page, one to approve (starts being tracked on every price check) or dismiss (never suggested again). A "New Links Found" dashboard stat and a per-product badge track pending candidates
 - **Scheduled Price Checks** — Configurable check times (default: 9 AM and 2 PM)
 - **Price History Charts** — Interactive Chart.js graphs showing price trends over time
 - **Minimum Price Tracking** — Highlights the lowest price ever recorded for each product
@@ -30,7 +30,7 @@ A web application that monitors price changes for products across different e-co
 │   │   └── (also declares TelegramNotification & AppSettings — currently unused)
 │   ├── main.py             # Application entry point
 │   ├── price_checker.py    # Web scraping & price extraction logic
-│   ├── alternate_links.py  # Auto-discovers the same product on other stores (EAN/GTIN/UPC/ASIN)
+│   ├── alternate_links.py  # Finds the same product on other stores (code / model number / name) as reviewable candidates
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
 │   ├── telegram_notifier.py# Telegram bot notifications (per-user chat ID support)
 │   ├── scheduler.py        # APScheduler for periodic checks (price checks + database backup)
@@ -87,7 +87,7 @@ python main.py
 | `TELEGRAM_BOT_TOKEN` | *(empty)* | Telegram bot token from @BotFather (required for notifications) |
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for automatic alternate-link discovery |
-| `ALTERNATE_LINKS_MAX` | `3` | Max alternate links kept per product (min 1) |
+| `ALTERNATE_LINKS_MAX` | `3` | Max candidate (suggested) links per product (min 1) |
 | `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
@@ -213,13 +213,16 @@ If anything fails before the database file is replaced (bad credentials, no back
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check |
-| `GET` | `/api/products` | List all products for current user with stats |
+| `GET` | `/api/products` | List all products for current user with stats (incl. `candidate_count` = pending cheaper suggestions) |
 | `POST` | `/api/products` | Add a new product |
 | `GET` | `/api/products/{id}` | Get product details |
 | `PUT` | `/api/products/{id}` | Update a product |
 | `DELETE` | `/api/products/{id}` | Delete a product |
 | `POST` | `/api/products/{id}/check` | Trigger immediate price check |
-| `POST` | `/api/products/{id}/find-alternates` | Trigger alternate-link discovery now (takes a couple of minutes) |
+| `POST` | `/api/products/{id}/find-alternates` | Trigger candidate-link discovery now (takes a couple of minutes) |
+| `GET` | `/api/products/{id}/candidates` | List pending suggested (candidate) links for the product |
+| `POST` | `/api/products/{id}/candidates/{cid}/approve` | Approve a candidate — its URL is added to the product's alternative links |
+| `POST` | `/api/products/{id}/candidates/{cid}/dismiss` | Dismiss a candidate — it is never suggested again |
 | `GET` | `/api/products/{id}/prices` | Get price history (newest first) |
 | `GET` | `/api/products/{id}/prices/reverse` | Get price history (oldest first, for charts) |
 | `GET` | `/api/products/{id}/chart` | Generate PNG chart image |
@@ -311,9 +314,9 @@ curl -X POST http://localhost:13020/api/products/1/check \
 
 The web interface features:
 - **Login/Register** — Themed authentication UI with sign-up toggle control
-- **Dashboard** — Overview statistics (total products, active checks, price drops)
-- **Product List** — Table with current/min/avg prices and quick actions
-- **Product Detail** — Interactive Chart.js price history graph
+- **Dashboard** — Overview statistics (total products, active checks, new links found, price drops)
+- **Product List** — Table with current/min/avg prices, a "New Links" pending-candidate badge, and quick actions
+- **Product Detail** — Interactive Chart.js price history graph plus a "Suggested Links" panel with approve / dismiss actions
 - **Settings Page** — Per-user Telegram notification configuration with test button
 - **Sign Out** — Button to clear session token
 
@@ -335,13 +338,17 @@ Price strings handle both EU (`1.234,56`) and US (`1,234.56`) number formats, an
 
 If auto-detection fails, you can set a **custom CSS selector** when adding the product (`scraper_type: "custom"`).
 
-## 🔎 Automated Alternate-Link Discovery
+## 🔎 Suggested Store Links (Alternate-Link Discovery)
 
-For each product you can let the app find the **same product on other stores** and monitor all of them:
+For each product the app can find the **same product on other stores** in the same country. Found links are **candidates** — they are not attached to the product automatically; you review them in the product detail page and **approve** (✓ Add Link → the URL becomes a tracked alternative source, checked on every price run and plotted as one line per store on the graph) or **dismiss** (✖ Dismiss → never suggested again). A "New Links Found" dashboard stat and a per-product 🔗 badge track pending candidates.
 
-- The app identifies the product by a globally unique code — EAN/GTIN/UPC barcode (check-digit validated) or Amazon ASIN — taken from the product page metadata or URL slug. Store-internal IDs are rejected on purpose.
-- It web-searches that exact code (DuckDuckGo + Bing), keeping only results from **other stores with the same country domain suffix** (e.g. a `.ro` product only finds other `.ro` sites) and never keeping price-comparison aggregators (price.ro, compari.ro, idealo, …).
-- Every candidate page is fetched and **verified to display that exact product code** plus an extractable price. The cheapest verified links (up to `ALTERNATE_LINKS_MAX`) are saved as the product's alternative sources, which are then checked on every price run and plotted as one line per store on the graph.
+Three matching methods are tried in order of reliability, and discovery stops as soon as at least one promising (cheaper) candidate is found:
+
+1. **Product code** — EAN/GTIN/UPC barcode (check-digit validated) or Amazon ASIN, taken from the product page metadata (JSON-LD / meta tags / `content` attributes) or URL slug. For ASINs the candidate is built directly as `amazon.<country>/dp/<ASIN>` (no web search); otherwise the exact code is web-searched (DuckDuckGo + Bing). Store-internal IDs are rejected on purpose.
+2. **Model number (MPN)** — letters+digits model strings from page metadata (e.g. `GSR18V-150`); the search result page must contain the exact model string.
+3. **Product name** — a cleaned, store-brand-free product title from JSON-LD / meta tags / `<h1>`; the candidate page's name must be the same product (token recall / string similarity, with rejection of accessory or different-product names).
+
+For methods 1 and 3, only results from **other stores with the same country domain suffix** are kept (e.g. a `.ro` product only finds other `.ro` sites) and price-comparison aggregators (price.ro, compari.ro, idealo, …) are never kept. Every candidate page is fetched and its price extracted (only candidates cheaper than the current price are suggested; up to `ALTERNATE_LINKS_MAX` at a time).
 
 **How to trigger it:**
 - **Manually** — "🔎 Find Links" button on the product detail page (`POST /api/products/{id}/find-alternates`).

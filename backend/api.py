@@ -28,14 +28,14 @@ class DateTimeEncoder(json.JSONEncoder):
         return super().default(obj)
 
 from database import get_db, init_db, engine, SessionLocal
-from models import Product, PriceEntry, AppSettings, Base, User
+from models import Product, PriceEntry, AppSettings, Base, User, LinkCandidate
 
 
 class TelegramSettingsRequest(BaseModel):
     telegram_chat_id: Optional[str] = Field(None, min_length=1, max_length=100)
     telegram_notifications_enabled: Optional[bool] = None
-from price_checker import check_product_price, run_all_price_checks
-from alternate_links import find_alternate_links
+from price_checker import check_product_price, run_all_price_checks, get_current_price
+from alternate_links import find_alternate_links, METHOD_PRIORITY, _max_links
 from graph_generator import generate_price_chart, get_price_statistics
 from telegram_notifier import (
     test_notification,
@@ -112,6 +112,7 @@ class ProductResponse(BaseModel):
     custom_selector: Optional[str]
     alternative_urls: List[str] = []
     auto_alternate_links: bool = True
+    candidate_count: int = 0  # Pending (unapproved/undismissed) candidate links awaiting review
     created_at: datetime
     updated_at: datetime
 
@@ -148,6 +149,21 @@ def _parse_alternative_urls(raw) -> List[str]:
     return []
 
 
+def _pending_candidate_count(db: Session, product_id: int, current_price: Optional[float] = None) -> int:
+    """Number of pending candidates that the review panel would show for this product.
+
+    Counts only candidates cheaper than the current price (when one is known), so the
+    badge/stat always matches what the candidate list actually displays.
+    """
+    query = db.query(func.count(LinkCandidate.id)).filter(
+        LinkCandidate.product_id == product_id,
+        LinkCandidate.status == "pending",
+    )
+    if current_price is not None:
+        query = query.filter(LinkCandidate.price < current_price)
+    return min(query.scalar() or 0, max(1, _max_links()))
+
+
 def _extract_main_domain(url: str) -> str:
     """Extract the main domain from a URL (e.g., 'https://www.notino.ro/x' -> 'notino.ro')."""
     try:
@@ -159,35 +175,6 @@ def _extract_main_domain(url: str) -> str:
         return host or url
     except Exception:
         return url
-
-
-def _get_current_price(db: Session, product_id: int) -> Optional[float]:
-    """Get the product's current price: the minimum over all sources checked in the
-    latest check cycle (entries share a ``check_cycle`` timestamp per check run).
-
-    Falls back to the most recent single entry for legacy products that have not been
-    checked since the check_cycle column existed.
-    """
-    row = (
-        db.query(PriceEntry.check_cycle, func.min(PriceEntry.price))
-        .filter(
-            PriceEntry.product_id == product_id,
-            PriceEntry.check_cycle.isnot(None),
-        )
-        .group_by(PriceEntry.check_cycle)
-        .order_by(PriceEntry.check_cycle.desc())
-        .first()
-    )
-    if row is not None:
-        return row[1]
-
-    latest = (
-        db.query(PriceEntry)
-        .filter(PriceEntry.product_id == product_id)
-        .order_by(PriceEntry.checked_at.desc(), PriceEntry.id.desc())
-        .first()
-    )
-    return latest.price if latest else None
 
 
 def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
@@ -525,7 +512,8 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
         min_p, max_p, avg_p, count = stats if stats else (None, None, None, 0)
 
         # Current price = minimum over all sources checked in the latest check cycle
-        current_price = _get_current_price(db, product.id)
+        current_price = get_current_price(db, product.id)
+        candidate_count = _pending_candidate_count(db, product.id, current_price)
 
         result.append(ProductDetailResponse(
             id=product.id,
@@ -538,6 +526,7 @@ async def list_products(request: Request, db: Session = Depends(get_db)):
             custom_selector=product.custom_selector,
             alternative_urls=_parse_alternative_urls(product.alternative_urls),
             auto_alternate_links=bool(product.auto_alternate_links),
+            candidate_count=candidate_count,
             created_at=product.created_at,
             updated_at=product.updated_at,
             current_price=current_price,
@@ -642,7 +631,8 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
     min_p, max_p, avg_p, count = stats if stats else (None, None, None, 0)
 
     # Current price = minimum over all sources checked in the latest check cycle
-    current_price = _get_current_price(db, product_id)
+    current_price = get_current_price(db, product_id)
+    candidate_count = _pending_candidate_count(db, product_id, current_price)
 
     return ProductDetailResponse(
         id=product.id,
@@ -655,6 +645,7 @@ async def get_product(product_id: int, request: Request, db: Session = Depends(g
         custom_selector=product.custom_selector,
         alternative_urls=_parse_alternative_urls(product.alternative_urls),
         auto_alternate_links=bool(product.auto_alternate_links),
+        candidate_count=candidate_count,
         created_at=product.created_at,
         updated_at=product.updated_at,
         current_price=current_price,
@@ -714,6 +705,11 @@ async def update_product(product_id: int, product: ProductUpdate, request: Reque
 
     db.commit()
     db.refresh(db_product)
+    # Not a mapped column: expose the pending-candidate count for this response
+    # (from_attributes has no ORM attribute for it, so attach it here).
+    db_product.candidate_count = _pending_candidate_count(
+        db, db_product.id, get_current_price(db, db_product.id)
+    )
     return db_product
 
 
@@ -847,6 +843,151 @@ def find_alternates_now(product_id: int, request: Request, db: Session = Depends
         raise HTTPException(status_code=404, detail="Product not found")
 
     return find_alternate_links(product_id)
+
+
+# ============ Candidate links (per-user) ============
+
+class LinkCandidateResponse(BaseModel):
+    id: int
+    url: str
+    price: Optional[float]
+    match_method: Optional[str]  # "code" / "model" / "name"
+    status: str
+    savings: Optional[float] = None  # current_price - candidate.price
+    found_at: datetime
+    decided_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+    @field_validator("found_at", "decided_at", mode="before")
+    @classmethod
+    def _utc(cls, v):
+        return _ensure_utc(v)
+
+
+def _candidate_sort_key(candidate: LinkCandidate):
+    """Rank by match reliability (code < model < name), then by price (cheapest first)."""
+    method_rank = METHOD_PRIORITY.get(candidate.match_method, 99)
+    price = candidate.price if candidate.price is not None else float("inf")
+    return (method_rank, price)
+
+
+def _load_owned_product(product_id: int, request: Request, db: Session) -> Product:
+    user = get_user_from_request(request)
+    product = db.query(Product).filter(
+        Product.id == product_id,
+        Product.user_id == user["user_id"]
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@app.get("/api/products/{product_id}/candidates", response_model=List[LinkCandidateResponse])
+async def list_candidate_links(product_id: int, request: Request, db: Session = Depends(get_db)):
+    """List pending candidate links for a product (cheaper than the current price).
+
+    Ranked by match reliability then by price; at most ALTERNATE_LINKS_MAX are
+    returned so the UI always shows a short, prioritised review list.
+    """
+    product = _load_owned_product(product_id, request, db)
+    current_price = get_current_price(db, product_id)
+
+    pending = (
+        db.query(LinkCandidate)
+        .filter(
+            LinkCandidate.product_id == product_id,
+            LinkCandidate.status == "pending",
+        )
+        .all()
+    )
+    # Only candidates that still beat the current price (or all, when there is no
+    # recorded price yet to compare against).
+    if current_price is not None:
+        pending = [c for c in pending if c.price is not None and c.price < current_price]
+
+    pending.sort(key=_candidate_sort_key)
+
+    limit = max(1, _max_links())
+    result = []
+    for candidate in pending[:limit]:
+        response = LinkCandidateResponse.model_validate(candidate)
+        if current_price is not None and candidate.price is not None:
+            response.savings = round(current_price - candidate.price, 2)
+        result.append(response)
+    return result
+
+
+@app.post("/api/products/{product_id}/candidates/{candidate_id}/approve")
+async def approve_candidate_link(
+    product_id: int,
+    candidate_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Approve a candidate: mark it approved and attach its URL to the product.
+
+    The approved URL becomes a real alternate price source checked on every run.
+    """
+    product = _load_owned_product(product_id, request, db)
+    candidate = db.query(LinkCandidate).filter(
+        LinkCandidate.id == candidate_id,
+        LinkCandidate.product_id == product_id,
+    ).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if candidate.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Candidate is not pending (status: {candidate.status})")
+
+    # Attach the URL to the product (deduplicated, skipping the main URL)
+    urls = _parse_alternative_urls(product.alternative_urls)
+    candidate_url = candidate.url.rstrip("/")
+    if candidate.url != product.url and candidate_url not in {u.rstrip("/") for u in urls}:
+        urls.append(candidate.url)
+        product.alternative_urls = json.dumps(urls)
+
+    candidate.status = "approved"
+    candidate.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(product)
+    logger.info(f"User {get_user_from_request(request)['username']} approved candidate {candidate.url} for product {product_id}")
+
+    return {
+        "success": True,
+        "candidate": LinkCandidateResponse.model_validate(candidate),
+        "alternative_urls": urls,
+    }
+
+
+@app.post("/api/products/{product_id}/candidates/{candidate_id}/dismiss")
+async def dismiss_candidate_link(
+    product_id: int,
+    candidate_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Dismiss a candidate: mark it dismissed so discovery never suggests it again."""
+    product = _load_owned_product(product_id, request, db)
+    candidate = db.query(LinkCandidate).filter(
+        LinkCandidate.id == candidate_id,
+        LinkCandidate.product_id == product_id,
+    ).first()
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if candidate.status != "pending":
+        raise HTTPException(status_code=400, detail=f"Candidate is not pending (status: {candidate.status})")
+
+    candidate.status = "dismissed"
+    candidate.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(candidate)
+    logger.info(f"User {get_user_from_request(request)['username']} dismissed candidate {candidate.url} for product {product_id}")
+
+    return {
+        "success": True,
+        "candidate": LinkCandidateResponse.model_validate(candidate),
+    }
 
 
 @app.post("/api/check-all")

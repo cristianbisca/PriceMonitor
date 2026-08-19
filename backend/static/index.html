@@ -148,6 +148,18 @@
         .status-active { background: rgba(34, 197, 94, 0.2); color: var(--accent-green); }
         .status-inactive { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
 
+        /* New candidate links */
+        .new-link-badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 0.8rem; font-weight: 700; background: rgba(245, 158, 11, 0.2); color: var(--accent-yellow); }
+        .candidates-description { padding: 14px 24px 0; color: var(--text-secondary); font-size: 0.9rem; line-height: 1.5; }
+        .candidate-card { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-top: 1px solid var(--border-color); flex-wrap: wrap; }
+        .candidate-info { min-width: 0; flex: 1; }
+        .candidate-url { color: var(--text-secondary); font-size: 0.85rem; max-width: 480px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 4px; }
+        .candidate-meta { color: var(--text-muted); font-size: 0.75rem; margin-top: 6px; }
+        .candidate-actions { display: flex; gap: 8px; flex-shrink: 0; }
+        .method-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; margin-left: 8px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); vertical-align: middle; }
+        .method-badge.model { background: rgba(168, 85, 247, 0.18); color: #c084fc; }
+        .method-badge.name { background: rgba(245, 158, 11, 0.18); color: var(--accent-yellow); }
+
         .actions-cell { display: flex; gap: 8px; }
 
         /* Detail View */
@@ -491,9 +503,9 @@
                     <div class="sub">enabled products</div>
                 </div>
                 <div class="stat-card">
-                    <div class="label">Total Price Checks</div>
-                    <div class="value" id="totalChecks">-</div>
-                    <div class="sub">checks performed</div>
+                    <div class="label">New Links Found</div>
+                    <div class="value" id="totalNewLinks">-</div>
+                    <div class="sub">awaiting review</div>
                 </div>
                 <div class="stat-card">
                     <div class="label">Price Drops Found</div>
@@ -636,6 +648,15 @@
 
             <!-- Stats Row -->
             <div class="stats-row" id="detailStats"></div>
+
+            <!-- Candidate Links (proposed by discovery, awaiting review) -->
+            <div class="products-section" id="candidatesSection" style="display:none; margin-bottom: 30px;">
+                <div class="section-header">
+                    <h2>🔗 New Links Found</h2>
+                </div>
+                <div class="candidates-description">Cheaper offers for the same product found on other stores. Add a link to start tracking its price too, or dismiss it if it is not the same product.</div>
+                <div id="candidatesList"></div>
+            </div>
 
             <!-- Chart -->
             <div class="chart-container">
@@ -1063,11 +1084,12 @@
             function updateStats() {
                 const total = products.length;
                 const active = products.filter(p => p.enabled).length;
-                const checks = products.reduce((sum, p) => sum + (p.price_count || 0), 0);
+                // Total new links found = candidate links not yet approved or dismissed ("pending")
+                const newLinks = products.reduce((sum, p) => sum + (p.candidate_count || 0), 0);
                 const drops = products.reduce((sum, p) => sum + (p.min_price && p.current_price === p.min_price ? 1 : 0), 0);
                 document.getElementById('totalProducts').textContent = total;
                 document.getElementById('activeProducts').textContent = active;
-                document.getElementById('totalChecks').textContent = checks;
+                document.getElementById('totalNewLinks').textContent = newLinks;
                 document.getElementById('priceDrops').textContent = drops;
             }
 
@@ -1079,7 +1101,7 @@
                 }
                 // Sort: active products on top, disabled ones at the bottom (stable within each group)
                 const sortedProducts = [...products].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
-                let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>Checks</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>New Links</th><th>Actions</th></tr></thead><tbody>';
                 sortedProducts.forEach(p => {
                     // Current/min prices are shown as text under the link to keep the table narrow on mobile
                     let pricesHtml = '';
@@ -1089,7 +1111,9 @@
                     html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
                     html += '<td><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
                     html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                    html += '<td>' + (p.price_count || 0) + '</td>';
+                    html += '<td>' + (p.candidate_count > 0
+                        ? '<span class="new-link-badge" title="' + p.candidate_count + ' candidate(s) awaiting review">🔗 ' + p.candidate_count + '</span>'
+                        : '<span style="color:var(--text-muted)">–</span>') + '</td>';
                     html += '<td class="actions-cell" onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
                 });
@@ -1248,10 +1272,7 @@
                     loadProducts();
                     // Refresh the detail view if it's open for this product
                     if (currentProductId === id) {
-                        const product = await window.api('GET', '/api/products/' + id);
-                        document.getElementById('detailName').textContent = product.name;
-                        renderDetailLinks(product);
-                        renderDetailStats(product);
+                        refreshDetailForProduct(id);
                     }
                 } catch (err) {
                     let msg = err.message || 'Failed to update product';
@@ -1303,19 +1324,16 @@
                 if (btn) { btn.disabled = true; btn.textContent = '⏳ Searching...'; }
                 try {
                     const r = await window.api('POST', '/api/products/' + currentProductId + '/find-alternates');
-                    const saved = (r.saved_alternative_urls || []).length;
                     if (r.success === false) {
                         showToast(r.message || 'Alternate link search failed', 'error');
-                    } else if (r.code) {
-                        showToast('Saved ' + saved + ' alternate link(s) via ' + r.code.type.toUpperCase() + ' ' + r.code.value, 'success');
+                    } else if (r.candidates_found > 0) {
+                        const via = r.code ? ' via ' + r.code.type.toUpperCase() + ' ' + r.code.value : '';
+                        showToast('Found ' + r.candidates_found + ' new candidate link(s)' + via + ' - review them below', 'success');
                     } else {
-                        showToast(r.message || 'No alternate links added', 'info');
+                        showToast(r.message || 'No cheaper candidate links found', 'info');
                     }
                     loadProducts();
-                    try {
-                        const product = await window.api('GET', '/api/products/' + currentProductId);
-                        renderDetailLinks(product);
-                    } catch (_) { /* detail refresh is best-effort */ }
+                    refreshDetailForProduct(currentProductId);
                 } catch (err) {
                     showToast(err.message || 'Alternate link search failed', 'error');
                 } finally {
@@ -1344,6 +1362,7 @@
                 document.getElementById('detailName').textContent = product.name;
                 renderDetailLinks(product);
                 renderDetailStats(product);
+                renderCandidates(id);
                 await loadPriceHistory(id);
                 // Push a history entry so the mobile back button returns to the list view
                 if (pushHistory) {
@@ -1359,6 +1378,96 @@
                     '<div class="stat-item"><div class="stat-label">Avg Price</div><div class="stat-value">' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : 'N/A') + '</div></div>' +
                     '<div class="stat-item"><div class="stat-label">Total Checks</div><div class="stat-value">' + (p.price_count || 0) + '</div></div>';
             }
+
+            const CANDIDATE_METHOD_LABELS = { code: 'product code', model: 'model number', name: 'name match' };
+
+            async function renderCandidates(productId) {
+                const section = document.getElementById('candidatesSection');
+                const list = document.getElementById('candidatesList');
+                if (!section || !list) return;
+                let candidates = [];
+                try {
+                    candidates = await window.api('GET', '/api/products/' + productId + '/candidates');
+                } catch (_) {
+                    candidates = [];
+                }
+                if (currentProductId !== productId) return; // view changed meanwhile
+                if (!candidates || candidates.length === 0) {
+                    section.style.display = 'none';
+                    list.innerHTML = '';
+                    return;
+                }
+                section.style.display = '';
+                list.innerHTML = '';
+                const product = products.find(p => p.id === productId);
+                const cur = product ? product.currency : 'RON';
+                candidates.forEach(c => {
+                    const card = document.createElement('div');
+                    card.className = 'candidate-card';
+                    const info = document.createElement('div');
+                    info.className = 'candidate-info';
+                    let meta = 'Found ' + new Date(c.found_at).toLocaleString() + ' · matched via ' + (CANDIDATE_METHOD_LABELS[c.match_method] || c.match_method || '?');
+                    if (c.savings != null) meta += ' · saves ' + formatPrice(c.savings, cur);
+                    info.innerHTML =
+                        '<a class="link-source" href="' + escapeHtml(c.url) + '" target="_blank" title="' + escapeHtml(c.url) + '">' + escapeHtml(extractMainDomain(c.url)) + '</a>' +
+                        '<span class="method-badge ' + (c.match_method || '') + '">' + (CANDIDATE_METHOD_LABELS[c.match_method] || c.match_method || 'match') + '</span>' +
+                        '<div class="candidate-url">' + escapeHtml(c.url) + '</div>' +
+                        '<div class="candidate-meta">' + meta + '</div>';
+                    const priceEl = document.createElement('div');
+                    if (c.price != null) {
+                        priceEl.innerHTML = '<span class="price-badge price-min">' + formatPrice(c.price, cur) + '</span>';
+                    } else {
+                        priceEl.innerHTML = '<span style="color:var(--text-muted); font-size:0.8rem;">no price found</span>';
+                    }
+                    const actions = document.createElement('div');
+                    actions.className = 'candidate-actions';
+                    actions.innerHTML =
+                        '<button class="btn btn-success btn-sm" title="Add this link and track its price on every check" onclick="approveCandidate(' + c.id + ')">✓ Add Link</button>' +
+                        '<button class="btn btn-danger btn-sm" title="Not the same product? Dismiss it" onclick="dismissCandidate(' + c.id + ')">✖ Dismiss</button>';
+                    card.appendChild(info);
+                    card.appendChild(priceEl);
+                    card.appendChild(actions);
+                    list.appendChild(card);
+                });
+            }
+
+            async function refreshDetailForProduct(id) {
+                try {
+                    const product = await window.api('GET', '/api/products/' + id);
+                    document.getElementById('detailName').textContent = product.name;
+                    renderDetailLinks(product);
+                    renderDetailStats(product);
+                    renderCandidates(id);
+                } catch (_) { /* detail refresh is best-effort */ }
+            }
+
+            window.approveCandidate = async function(candidateId) {
+                if (currentProductId === null) return;
+                try {
+                    await window.api('POST', '/api/products/' + currentProductId + '/candidates/' + candidateId + '/approve');
+                    showToast('Link added - it will be tracked on every price check', 'success');
+                    await loadProducts();
+                    refreshDetailForProduct(currentProductId);
+                } catch (err) {
+                    let msg = err.message || 'Failed to approve candidate';
+                    try { const parsed = JSON.parse(msg); if (parsed.detail) msg = parsed.detail; } catch (_) {}
+                    showToast(msg, 'error');
+                }
+            };
+
+            window.dismissCandidate = async function(candidateId) {
+                if (currentProductId === null) return;
+                try {
+                    await window.api('POST', '/api/products/' + currentProductId + '/candidates/' + candidateId + '/dismiss');
+                    showToast('Candidate dismissed - it will not be suggested again', 'info');
+                    await loadProducts();
+                    renderCandidates(currentProductId);
+                } catch (err) {
+                    let msg = err.message || 'Failed to dismiss candidate';
+                    try { const parsed = JSON.parse(msg); if (parsed.detail) msg = parsed.detail; } catch (_) {}
+                    showToast(msg, 'error');
+                }
+            };
 
             window.showListView = function() {
                 hideAllViews();
@@ -1701,6 +1810,7 @@ async function loadPriceHistory(id) {
                 await loadPriceHistory(currentProductId);
                 const product = await window.api('GET', '/api/products/' + currentProductId);
                 renderDetailStats(product);
+                renderCandidates(currentProductId);
             };
 
             window.deleteCurrentProduct = async function() {

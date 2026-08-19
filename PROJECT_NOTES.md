@@ -12,7 +12,7 @@ A **multi-user web application** that monitors e-commerce product prices. It:
 - Tracks all-time minimums
 - **Current price = the cheapest price across all sources at the time of the last check** (the minimum of one check run, which records one entry per source). **Minimum price = all-time minimum** (lowest of every price ever recorded). Notifications are based on the current-price logic.
 - Supports **alternative price sources** per product (extra URLs checked alongside the main one; each recorded entry is tagged with its source domain and plotted as a separate colored line on the graph)
-- **Auto-discovers alternative links**: finds the product's globally unique code (EAN/GTIN/UPC or ASIN), web-searches other stores in the same country domain suffix, verifies the code on each candidate page, and keeps the cheapest confirmed links (see §7)
+- **Discovers same-product links as reviewable candidates**: matches the product on other stores in the same country domain suffix by product code (EAN/GTIN/UPC/ASIN), model number, or product name; found links are stored as *candidates* (cheaper-only) and only become tracked alternative sources after the user approves them in the UI (see §7)
 - Sends **Telegram** notifications on price drops / new minimums / first check
 - Serves a dark-themed PWA dashboard with Chart.js price graphs
 
@@ -38,9 +38,9 @@ PriceMonitor/
 │   ├── api.py               # THE FastAPI app: app instance, middleware, startup/shutdown, ALL endpoints
 │   ├── auth.py              # Token auth: base64-JSON tokens, SHA-256 passwords, AuthMiddleware
 │   ├── database.py          # SQLAlchemy engine/session; DATABASE_URL env; SQLite check_same_thread=False
-│   ├── models.py            # ORM models: User, Product, PriceEntry
+│   ├── models.py            # ORM models: User, Product, PriceEntry, LinkCandidate
 │   ├── price_checker.py     # Page fetch + 7-tier price extraction strategy (multi-source aware)
-│   ├── alternate_links.py   # Alternate-link discovery (EAN/GTIN/UPC/ASIN matching, multi-engine web search)
+│   ├── alternate_links.py   # Candidate-link discovery (code / model number / name matching, multi-engine web search)
 │   ├── scheduler.py         # APScheduler cron jobs; per-product notification dispatch; alternate-link schedule; backup schedule
 │   ├── backup.py            # Dropbox backup/restore: token refresh, snapshots, uploads, retention, boot-restore
 │   ├── telegram_notifier.py # Telegram Bot API message senders (per-user chat IDs)
@@ -64,8 +64,10 @@ User (id, username, password_hash, created_at,
   └── Product (id, user_id, name, url, price_field, currency, enabled,
                created_at, updated_at, scraper_type, custom_selector,
                alternative_urls, auto_alternate_links)
-         └── PriceEntry (id, product_id, price, currency, checked_at,
-                         is_minimum, source, check_cycle, raw_html)
+        ├── PriceEntry (id, product_id, price, currency, checked_at,
+        │               is_minimum, source, check_cycle, raw_html)
+        └── LinkCandidate (id, product_id, url, price, match_method, status,
+                           found_at, decided_at)
 
 TelegramNotification (id, product_id, entry_id, chat_id, message_type,
                       sent_at, message_text)          # DEAD CODE — defined, never used
@@ -74,7 +76,8 @@ AppSettings (id, key, value)                          # DEAD CODE — defined, n
 
 - **`User`** — owns products; stores per-user Telegram settings (chat ID + enable toggle).
 - **`Product`** — `scraper_type` is `"auto"` (default) or `"custom"`; `custom_selector` holds a user CSS selector when `scraper_type == "custom"`. `enabled` gates scheduled checks. `price_field` is a legacy hint column (unused by the current extraction logic). URL is unique per user (`uq_user_url`). `alternative_urls` stores extra product URLs as a **JSON array of strings** in a `Text` column (e.g. `'["https://emag.ro/...", "https://amazon.de/..."]'`); `None` when empty. The API layer parses it to/from a list (`_parse_alternative_urls`) and validates entries on create/update (must be http(s), no duplicates of the main URL or each other, trailing-slash-insensitive).
-- **`Product.auto_alternate_links`** — per-product toggle (default `True`): allows the scheduled alternate-link discovery to read/write this product's `alternative_urls`. Toggled by the "Auto find alternate links" checkbox in the add/edit forms (checked by default).
+- **`Product.auto_alternate_links`** — per-product toggle (default `True`): allows the scheduled candidate-link discovery to *propose* candidates for this product (approving them is manual in the UI; the manual "Find Links" button works regardless). Toggled by the "Auto find alternate links" checkbox in the add/edit forms (checked by default).
+- **`LinkCandidate`** — a proposed same-product link awaiting user review (§7). `url` is normalized (no trailing slash) and unique per product via `UniqueConstraint(product_id, url, name="uq_candidate_product_url")` — re-runs upsert the same row (refresh price, upgrade-only `match_method`). `match_method` = `"code"` (EAN/UPC/GTIN/ASIN), `"model"` (MPN), or `"name"`; `status` = `"pending"` (default) / `"approved"` / `"dismissed"`; `price` = price found at discovery time (NULL when the page has no extractable price — still suggested, ranked last); `found_at` on creation, `decided_at` set on approve/dismiss. **Approving** appends the URL to `Product.alternative_urls` (deduplicated, main URL skipped; approved links are not capped). **Dismissing** marks the URL dismissed so discovery never proposes it again for that product. The `link_candidates` table is new — created by `create_all` at startup (no ALTER auto-migration needed).
 - **`PriceEntry`** — one row per check **per source**. `is_minimum` = True when this price is lower than every previously recorded price for the product. `source` holds the main domain of the URL the price came from (e.g. `"notino.ro"`, via `_extract_main_domain()`); NULL on legacy rows predating the column — the API falls back to the product's main domain when building chart data. `check_cycle` is the **grouping key for a check run**: every source recorded in a single `check_product_price()` call shares one `check_cycle` UTC timestamp (and the same `checked_at`). **Current price = `MIN(price)` of the latest `check_cycle`** (cheapest source at the last check); **minimum price = `MIN(price)` over all rows** (all-time). NULL `check_cycle` on legacy rows predating the column — the API/notification logic falls back (see §6, §8). `checked_at` stored as UTC. `raw_html` is a `Text` column (comment says "for debugging/retries") but is **never populated** — `check_product_price()` creates the entry without it. Dead column.
 - **`TelegramNotification`** — defined to track sent notifications (avoid duplicates) but **never referenced** anywhere in the codebase. Dead code.
 - **`AppSettings`** — defined as a key/value store but **never referenced** anywhere in the codebase. Dead code.
@@ -127,23 +130,33 @@ Strips non-`[0-9.,]`, then disambiguates EU (`1.234,56`) vs US (`1,234.56`) by w
 Lone comma: decimal if ≤2 trailing digits, else thousands. Returns `None` for non-positive values.
 Sanity cap of `< 100000` is applied in several extraction paths.
 
-## 7. Alternate-Link Discovery (`alternate_links.py`)
+## 7. Candidate-Link Discovery (`alternate_links.py`)
 
-Finds other stores selling the **same product** and stores the cheapest of them in `Product.alternative_urls`, so the price checker then monitors all of them (see §6) and the chart plots one line per store.
+Finds other stores in the same country selling the **same product** and stores them as **candidate links** (`LinkCandidate` rows, §4) — nothing is attached to the product automatically. The user reviews candidates in the "Suggested Links" panel of the product detail page and **approves** (URL appended to `Product.alternative_urls` → tracked on every price check, one chart line per store) or **dismisses** (never suggested again) them.
 
 - **Triggers:** the scheduled job `scheduled_alternate_discovery()` (see §8) and the manual `POST /api/products/{id}/find-alternates` endpoint (a sync `def` on purpose, so FastAPI runs it in the worker thread pool — discovery takes minutes). The UI shows a "🔎 Find Links" button in the product detail header.
-- **Entry point:** `find_alternate_links(product_id)` → returns a JSON-safe summary `{success, code, domain_suffix, candidates_found, saved_alternative_urls, message}`.
+- **Entry point:** `find_alternate_links(product_id)` → returns a JSON-safe summary `{success, code: {type, value} | None, domain_suffix, current_price, candidates_found, pending_candidates, message}`.
 
 ### Algorithm
-1. **Identify the product by a globally unique code** (`_extract_product_code`): only EAN/UPC/GTIN barcodes (mod-10 check-digit validated via `_valid_ean`) and Amazon ASINs are accepted — store-internal IDs (eMAG `p-12345`, variant IDs, model numbers) are deliberately rejected so a link we're not reasonably sure is the same product is never saved.
-   - Sources in priority order: page metadata (JSON-LD / microdata / `<meta name|property>` for `gtin, gtin13, gtin12, gtin14, upc, ean, sku, mpn` — harvested recursively by `_harvest_page_codes`/`_harvest_codes`; some stores file the EAN under `sku`/`mpn`), then check-digit-validated barcodes embedded in the URL slug itself (`_ean_from_url`, eMAG puts the EAN in the slug).
-   - ASIN candidates: from `/dp/`, `/gp/product/`, `/product/` URL patterns and from `sku`/`mpn` fields matching `^[A-Z0-9]{10}$`.
-2. **Search the web** (`_search_engines` / `_search_candidates`): quotes the exact code and merges results from several engines because no single one is reliable from server IPs — DuckDuckGo HTML (`a.result__a`, unwraps the `/l/?uddg=` redirect), DuckDuckGo Lite, Bing RSS (`format=rss`, plain `<link>` URLs), Bing HTML (`li.b_algo h2 a`, resolves `/ck/a` redirects with a follow-up request). Candidates are filtered to: same **country TLD suffix** as the original site (`_domain_suffix`, handles two-part suffixes like `com.ro` → `ro`), not the same store site (`_is_same_site`, subdomains count), not a **price-comparison aggregator** (`AGGREGATOR_HOSTS`: price.ro, compari.ro, idealo.*, geizhals.de, … — their pages list many stores' offers, not a single shop to monitor). Up to `SEARCH_RESULT_LIMIT = 10` candidates.
-   - ASIN shortcut: no web search — the same ASIN is the same product on any Amazon domain, so `_asin_candidates` builds `https://amazon.{tld}/dp/{asin}` directly (`AMAZON_TLDS` maps `uk` → `co.uk`).
-3. **Verify each candidate** (`_verify_candidate`): fetch the page and require that the exact product code appears in the URL **or** the HTML (same-product proof) **and** that `extract_price_auto` returns a sane price (`0 < p <= 1_000_000`).
-4. **Rank and save**: verified new candidates plus the product's existing alternative links (re-priced, and any existing aggregator links are dropped) are pooled, sorted by price (None prices last), and the top `ALTERNATE_LINKS_MAX` (env, default 3, min 1) are written back to `alternative_urls` (committed only when the list actually changed).
-- **Politeness:** 1.5 s delay between candidate page fetches, 1.0 s between search engines, 0.5 s between Bing redirect resolutions. Reuses `price_checker._fetch_page` (browser-impersonated) and `extract_price_auto`.
-- **No code found** → returns `success: True` with an explanatory message and leaves existing links untouched.
+1. **Extract the original product's identifying data once** (main page fetched via `price_checker._fetch_page`):
+    - **Code** (`_extract_product_code`): only EAN/UPC/GTIN barcodes (mod-10 check-digit validated via `_valid_ean`) and Amazon ASINs (`^[A-Z0-9]{10}$`) are accepted — store-internal IDs (eMAG `p-12345`, variant IDs, model numbers) are deliberately rejected. Sources in priority order: page metadata (JSON-LD / microdata / `<meta name|property>` for `gtin, gtin13, gtin12, gtin14, upc, ean, sku, mpn, model` — harvested recursively by `_harvest_page_codes`/`_harvest_codes`; some stores file the EAN under `sku`/`mpn`), then check-digit-validated barcodes embedded in the URL slug (`_ean_from_url`, eMAG puts the EAN in the slug). ASIN candidates: `/dp/`, `/gp/product/`, `/product/` URL patterns and `sku`/`mpn`/`model` fields matching the ASIN regex.
+    - **Model numbers** (`_extract_model_names`): letters+digits values from the same metadata fields matching `_MODEL_RE = ^[A-Z0-9][A-Z0-9\-/_\.]{4,39}$` — length ≥ 5, at least one digit **and** at least one letter (pure-numeric barcodes/store IDs rejected), values already handled by the code path (valid EAN / ASIN) excluded, substring duplicates deduped, max `MAX_MODEL_NUMBERS = 2`.
+    - **Product name** (`_extract_product_name`): JSON-LD `name` → `og:title` / other product `<meta>`s → `<h1>` → `<title>`, cleaned by `_clean_title` (splits on ` - `, `: `, `|`/`>`/`»` separators and keeps the part with the most tokens unique to it; trailing store branding removed via `NAME_STOPWORDS`).
+2. **Three match methods** in reliability order (`METHOD_PRIORITY = {"code": 0, "model": 1, "name": 2}`) are probed until the pool holds at least one **"promising"** candidate (= cheaper than the current price, or any verified candidate when the product has no recorded price) — then the cheaper methods are skipped:
+    - **`code`** — the exact code is web-searched (`_search_candidates`: quotes the code and merges DuckDuckGo HTML / DuckDuckGo Lite / Bing RSS / Bing HTML because no single engine is reliable from server IPs; Bing `/ck/a` redirects are resolved with a follow-up request). Results are filtered to: same **country TLD suffix** as the original site (`_domain_suffix`, handles two-part suffixes `com.ro` → `ro`), not the same store (`_is_same_site`, subdomains count), not a **price-comparison aggregator** (`AGGREGATOR_HOSTS`: price.ro, compari.ro, idealo.*, geizhals.de, …). Up to `SEARCH_RESULT_LIMIT = 10` candidates.
+      - **ASIN shortcut:** no web search — the same ASIN is the same product on any Amazon domain, so `_asin_candidates` builds `https://amazon.{tld}/dp/{asin}` directly (`AMAZON_TLDS` maps `uk` → `co.uk`).
+      - Verification (`_verify_candidate(url, code)`): fetch the page and require the exact product code in the URL **or** the HTML (same-product proof) **and** a sane `extract_price_auto` price (`0 < p <= 1_000_000`).
+    - **`model`** — each model number is web-searched with the same filters; up to `MAX_VERIFY_PER_METHOD = 6` results are verified with `_verify_candidate(url, model, case_insensitive=True)` (store pages lowercase model numbers).
+    - **`name`** — the cleaned name is web-searched (same filters); up to `MAX_VERIFY_PER_METHOD = 6` results are fetched and verified by `_verify_name_candidate`: the candidate page's name (same extraction pipeline) must be the **same product** — token overlap with the original name (recall ≥ 0.6 on the original's tokens) **or** a ≥ 0.70 similarity of the compacted (letters/digits-only) strings, and the candidate must not add `ACCESSORY_WORDS` (case, battery, holder, …) that the original lacks — this rejects cases/accessories and different products.
+3. **Save candidates** (`_save_candidates`): the pool is filtered (main URL, existing `alternative_urls`, and all **dismissed** URLs are excluded — dismissed is permanent per product), then only candidates cheaper than the current price are kept (all verified ones when there's no recorded price; verified-but-priceless pages are kept with `price = NULL`), ranked by (method priority, price — `NULL` last), capped at `ALTERNATE_LINKS_MAX` (env, default 3, min 1). Upsert on the `(product_id, url)` unique constraint: a re-run **refreshes** the price and **upgrades** the method (never downgrades it) without duplicating rows; `approved` rows are untouched.
+- **Politeness:** 1.5 s delay between candidate page fetches (`FETCH_DELAY_SECONDS`), 1.0 s between search engines, 0.5 s between Bing redirect resolutions. Reuses `price_checker._fetch_page` (browser-impersonated) and `extract_price_auto`.
+- **Nothing identified** (no code, no model numbers, no name) → returns `success: True` with an explanatory message and changes nothing.
+
+### Candidate review (API + UI)
+- `GET /api/products/{id}/candidates` — pending-only list, filtered to candidates still cheaper than the current price (all pending ones when no price is recorded), sorted by (method priority, price), capped at `ALTERNATE_LINKS_MAX`; each item has a computed `savings = current_price - candidate.price`.
+- `POST …/candidates/{cid}/approve` — pending only (400 otherwise): appends the URL to `alternative_urls` (deduplicated trailing-slash-insensitive, main URL skipped), sets `status="approved"` + `decided_at`.
+- `POST …/candidates/{cid}/dismiss` — pending only: `status="dismissed"` + `decided_at`.
+- `ProductResponse.candidate_count` — pending-and-still-cheaper count (same filter as the list endpoint), capped at `ALTERNATE_LINKS_MAX`; computed by `_pending_candidate_count()` in `list_products` / `get_product` / `update_product`. Powers the dashboard **"New Links Found"** stat (sum over the user's products) and the per-product **🔗 badge** in the product table.
 
 ## 8. Scheduling & Notifications
 
@@ -151,7 +164,7 @@ Finds other stores selling the **same product** and stores the cheapest of them 
 - `BackgroundScheduler(timezone=TZ env, default Europe/Bucharest)`.
 - `init_scheduler()` parses `PRICE_CHECK_TIMES` (comma-separated `HH:MM`, default `09:00,14:00`) into cron jobs, then `ALTERNATE_LINK_TIMES` (same `HH:MM` format, **empty by default = feature disabled**) into `scheduled_alternate_discovery` jobs with `max_instances=1, coalesce=True` (a run takes minutes — it must never overlap itself).
 - `scheduled_price_check()` is **global**: checks **all** enabled products across **all** users, then dispatches notifications per product.
-- `scheduled_alternate_discovery()` runs `find_alternate_links()` (see §7) for every **enabled** product whose `auto_alternate_links` is True, logging a per-product summary.
+- `scheduled_alternate_discovery()` runs `find_alternate_links()` (see §7) for every **enabled** product whose `auto_alternate_links` is True, logging a per-product summary. Results are **candidates awaiting user review** — the job never attaches links to a product on its own.
 
 ### Notification dispatch (`_send_notifications_for_product`)
 Called once per successfully-checked product (from `scheduled_price_check`). Everything is based on the **current price** = `MIN(price)` of the latest `check_cycle` (cheapest source at the last check). It loads all entries, finds the latest `check_cycle`, and splits rows into this cycle vs. everything before it:
@@ -175,7 +188,6 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 - **Timezone gotcha:** `_convert_to_local_time()` converts UTC → local TZ then **strips tzinfo** (returns naive) so matplotlib doesn't double-apply UTC conversion. `plt.rcParams['timezone']` set from `TZ` env.
 
 ## 10. Known Drift / Gotchas (verified against code)
-- **README §"Price Extraction Strategies" is outdated** — it lists only JSON-LD, meta, CSS, microdata. The actual code has 7 strategies with embedded-JSON and data-testid *ahead* of JSON-LD, plus Amazon-specific handling.
 - **`auth.py` `require_auth()` is dead code** — it references `HTTPException`, which is **not imported** in `auth.py` (only `Request` and `JSONResponse` are). It would raise `NameError` if called, but it's never used: `api.py` imports `get_current_user` (not `require_auth`) and authenticates via `get_user_from_request()` reading `request.state.user` (set by `AuthMiddleware`). Latent bug, never triggered.
 - **Passwords use unsalted SHA-256** — fine for a personal tool, not for production multi-tenant use.
 - **`telegram_notifier.py`** `send_message()` has an unreachable `return True` after `response.raise_for_status()` in the non-200 branch (lines 161-162). `raise_for_status()` raises `HTTPError`, caught by the `except requests.HTTPError` handler (returns `False`). So the `return True` is dead code; behavior is correct (returns `False` on HTTP error) but the line is misleading.
@@ -186,7 +198,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 - **`run_all_price_checks()` is dead code** — defined in `price_checker.py` and imported in both `api.py` and `scheduler.py`, but **never called**. The scheduler uses its own `scheduled_price_check()` (which loops `check_product_price` per product and dispatches notifications), and the manual "check all" endpoint (`POST /api/check-all`) calls `check_product_price` directly. The unused import in `api.py`/`scheduler.py` is a leftover.
 - **`PriceEntry.raw_html` is a dead column** — declared in `models.py` but never assigned a value anywhere.
 - **`DATABASE_URL` default differs by layer** — the code fallback in `database.py` is `sqlite:///./price_monitor.db` (current working dir), but `.env`/`docker-compose.yml` override it to `sqlite:///data/price_monitor.db` (the `/app/data` volume). In practice the DB lives in `data/`.
-- **Auto-migration on startup** — `api.py` inspects the schema at startup and adds missing columns: `users.telegram_chat_id` / `users.telegram_notifications_enabled`, `products.alternative_urls TEXT`, `products.auto_alternate_links BOOLEAN DEFAULT 1`, `price_history.source VARCHAR(255)`, and `price_history.check_cycle DATETIME`. Existing rows get NULL `source` (chart data falls back to the product's main domain), default-1 `auto_alternate_links`, and NULL `check_cycle` (current-price lookups fall back to the latest entry; the next check starts proper cycles).
+- **Auto-migration on startup** — `api.py` inspects the schema at startup and adds missing columns: `users.telegram_chat_id` / `users.telegram_notifications_enabled`, `products.alternative_urls TEXT`, `products.auto_alternate_links BOOLEAN DEFAULT 1`, `price_history.source VARCHAR(255)`, and `price_history.check_cycle DATETIME`. Existing rows get NULL `source` (chart data falls back to the product's main domain), default-1 `auto_alternate_links`, and NULL `check_cycle` (current-price lookups fall back to the latest entry; the next check starts proper cycles). New **tables** (like `link_candidates`, §7) need no migration — `create_all` creates them on startup; only new *columns* on existing tables need a line added to this hook.
 - **`RESTORE_LATEST_BACKUP` is one-shot** — while set to `true`, the newest Dropbox backup overwrites the database on **every** startup (see §15). Set it, let it restore, then set it back to `false`. A failed restore (or a schema-init failure after restore with no usable safety copy) aborts startup.
 - **Backup snapshots use the SQLite online backup API** — `backup.py` never copies the `.db` file by hand; `sqlite3.Connection.backup()` is used so snapshots are consistent even while the app is writing. The physical DB path is parsed from `DATABASE_URL` (`make_url(...).database`); non-SQLite URLs are rejected (`BackupNotSupportedError`).
 
@@ -200,7 +212,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 | `TELEGRAM_CHAT_ID` | *(empty)* | Global fallback chat ID(s), comma-separated |
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated 24h check times |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for scheduled alternate-link discovery (§7) |
-| `ALTERNATE_LINKS_MAX` | `3` | Max alternate links kept per product (min 1) |
+| `ALTERNATE_LINKS_MAX` | `3` | Max candidate (suggested) links kept per product (min 1) |
 | `PORT` | `3000` | HTTP server port (in-container) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new registrations |
@@ -219,7 +231,9 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 
 **Auth:** `GET /api/auth/status`, `POST /api/auth/register`, `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/me`
 
-**Products:** `GET /api/health`, `GET/POST /api/products`, `GET/PUT/DELETE /api/products/{id}`, `POST /api/products/{id}/check`, `POST /api/products/{id}/find-alternates` (manual alternate-link discovery, §7), `GET /api/products/{id}/prices`, `GET /api/products/{id}/prices/reverse`, `GET /api/products/{id}/chart`, `GET /api/products/{id}/statistics`, `POST /api/check-all`
+**Products:** `GET /api/health`, `GET/POST /api/products`, `GET/PUT/DELETE /api/products/{id}`, `POST /api/products/{id}/check`, `POST /api/products/{id}/find-alternates` (manual candidate-link discovery, §7), `GET /api/products/{id}/candidates`, `POST /api/products/{id}/candidates/{cid}/approve`, `POST /api/products/{id}/candidates/{cid}/dismiss` (candidate review, §7), `GET /api/products/{id}/prices`, `GET /api/products/{id}/prices/reverse`, `GET /api/products/{id}/chart`, `GET /api/products/{id}/statistics`, `POST /api/check-all`
+
+The product list/detail responses include `candidate_count` (pending cheaper candidates awaiting review, capped at `ALTERNATE_LINKS_MAX`) — it feeds the dashboard "New Links Found" stat and the per-product 🔗 badge.
 
 Note: `POST /api/products` runs an **initial price check immediately** (best-effort; failure doesn't block creation) and the response includes `initial_check_success`, `initial_check_price`, `initial_check_message`.
 
@@ -246,14 +260,16 @@ python main.py
 
 ## 14. Conventions for Future Edits
 - **Alternative sources:** the product add/edit forms have an "Alternative Price Sources" section (`renderAltUrlRows`/`collectAltUrls` helpers, one input row per URL) plus an **"Auto find alternate links"** checkbox (`autoAlternates` / `editAutoAlternates`, bound to `auto_alternate_links`, checked by default). The price-history table has a **Source** column (domain badge; alternative domains get an amber badge vs. blue for the main one), and the in-browser Chart.js chart mirrors the server PNG: one dataset per source domain with matching colors (`#3b82f6` main, then `#f59e0b`, `#10b981`, …).
-- **Alternate-link UI:** the product detail header has a **"🔎 Find Links"** button (`findCurrentAlternates()` → `POST /api/products/{id}/find-alternates`); it shows a toast with the saved count and the matched code (`Saved N alternate link(s) via EAN 4744131012001`) or the reason nothing was saved. Discovery is slow (several page fetches) — keep its endpoints as sync `def`s so they run in the thread pool, and keep the politeness delays in `alternate_links.py`.
+- **Candidate-link UI:** the product detail header has a **"🔎 Find Links"** button (`findCurrentAlternates()` → `POST /api/products/{id}/find-alternates`); it shows a toast with the number of candidates found and the matched code (`Found N new candidate link(s) via EAN <code> - review them below`) or the reason nothing was found. Discovery is slow (several page fetches) — keep its endpoints as sync `def`s so they run in the thread pool, and keep the politeness delays in `alternate_links.py`.
+  - The product detail has a **"Suggested Links"** panel (`#candidatesSection`/`#candidatesList`, filled by `renderCandidates(productId)`): one card per pending candidate (domain link, full URL, method badge via `CANDIDATE_METHOD_LABELS`, found date, price + "saves X" when `savings` is set) with **✓ Add Link** (`window.approveCandidate`) and **✖ Dismiss** (`window.dismissCandidate`). It is re-fetched whenever detail data refreshes (`refreshDetailForProduct` — after find-links, after a price check, after approve) and hidden when the list is empty; it guards against a view change racing the fetch (`currentProductId !== productId`).
+  - Dashboard: the old "Total Price Checks" stat card is **"New Links Found"** (`#totalNewLinks` = sum of `candidate_count` over the user's products); the product table has a **"New Links"** column with a 🔗 `new-link-badge` per product.
 - **Product list ordering:** the API returns products by `created_at DESC`; the frontend re-sorts for display with **enabled products on top**, disabled at the bottom (stable within each group, `index.html` around line 1036).
 - **Product detail links:** the detail header shows every product-page link (main URL first, then alternatives) as a stacked block — source domain label on top, full clickable URL below it (`renderDetailLinks` + `.link-block`/`.link-source` CSS in `index.html`).
 - Frontend is a **single HTML file** — no build tooling; keep changes self-contained in `index.html`.
 - All API calls from the frontend send `X-PM-Token` header (see the `apiFetch`-style helper in `index.html`).
 - New price-extraction heuristics: add a strategy function in `price_checker.py` and wire it into `extract_price_auto()` at the correct priority position; gate site-specific logic by host (like the Amazon check).
 - New notification types: add a sender in `telegram_notifier.py` + a branch in `scheduler._send_notifications_for_product` (base every type on the current price = min of the latest `check_cycle`, per §8).
-- Extending alternate-link discovery (§7): new search engines go in the `_search_engines` generator; new aggregator exclusions go in `AGGREGATOR_HOSTS`. Never weaken the same-product proof in `_verify_candidate` (code present in URL/HTML + extractable price) — that's what stops wrong products from being saved.
+- Extending candidate-link discovery (§7): new search engines go in the `_search_engines` generator; new aggregator exclusions go in `AGGREGATOR_HOSTS`; new same-country Amazon TLDs go in `AMAZON_TLDS`. New match methods go into the `METHOD_PRIORITY` ordered loop in `find_alternate_links` (the early-stop on the first "promising" candidate must stay). Never weaken the same-product proof (`_verify_candidate`: code in URL/HTML + extractable price; `_verify_name_candidate`: name similarity **and** no added accessory words) — that's what stops wrong products from being suggested. Candidate rows are upserted on `(product_id, url)`: on re-runs refresh the price and *upgrade-only* the `match_method`; dismissed URLs must stay excluded permanently.
 - Timezone-sensitive code: always convert via the `TZ` env and remember the naive-datetime requirement for matplotlib.
 
 ## 15. Dropbox Backup & Restore (`backup.py`)

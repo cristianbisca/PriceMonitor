@@ -3,24 +3,34 @@ Alternate-link discovery service.
 
 Run either on a schedule (ALTERNATE_LINK_TIMES env var, same pattern as
 PRICE_CHECK_TIMES) or manually via the /find-alternates endpoint. For each
-product it:
+product it searches the web for other stores selling the same product, using
+up to three matching methods in order of reliability (the first method that
+yields at least one candidate cheaper than the current price wins):
 
-  1. identifies the product by a globally unique code (EAN/UPC/GTIN barcode
-     or Amazon ASIN) extracted from the original product page,
-  2. searches the web for other stores selling the same product, restricted
-     to domains with the same country suffix (e.g. .ro original -> only
-     other .ro sites),
-   3. verifies every candidate page actually displays the same product code,
-   4. saves the cheapest verified links (up to ALTERNATE_LINKS_MAX, default 3)
-      to Product.alternative_urls alongside the existing links; price-comparison
-      aggregators (price.ro, compari.ro, idealo.de, ...) are never saved because
-      their pages list offers from many stores rather than being a shop to monitor.
+  1. "code"  — the product's globally unique code (EAN/UPC/GTIN barcode or
+     Amazon ASIN) extracted from the original page; candidates must display
+     that exact code on their page.
+  2. "model" — a manufacturer model number (MPN) from the page metadata;
+     candidates must display that model number on their page.
+  3. "name"  — the product's full name (JSON-LD / Open Graph / <title>);
+     candidates must carry a matching product name on their page.
 
-Store-internal identifiers (eMAG p-1234567, Notino variant IDs, plain model
-numbers) are deliberately rejected: they only identify a product inside one
-store, so using them could save a link pointing at a different item.
+All methods are restricted to domains with the same country suffix (e.g. a
+.ro original -> only other .ro sites) and never consider the same store or
+price-comparison aggregators (price.ro, compari.ro, idealo.de, ...) because
+their pages list offers from many stores rather than being a shop to monitor.
+
+Verified candidates that are cheaper than the product's current price are NOT
+attached to the product automatically. They are stored in LinkCandidate with
+status "pending" (up to ALTERNATE_LINKS_MAX, default 3, per run) and shown in
+the UI, where the user approves them (the link is appended to
+Product.alternative_urls) or dismisses them (the URL is never suggested again).
+
+Store-internal identifiers (eMAG p-1234567, Notino variant IDs) are deliberately
+rejected as "codes": they only identify a product inside one store.
 """
 
+import difflib
 import json
 import logging
 import os
@@ -32,13 +42,14 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from bs4 import BeautifulSoup
 
 from database import SessionLocal
-from models import Product
+from models import Product, LinkCandidate
 from price_checker import (
     SESSION,
     _fetch_page,
     _extract_main_domain,
     _get_alternative_urls,
     extract_price_auto,
+    get_current_price,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +63,35 @@ BING_RESOLVE_DELAY_SECONDS = 0.5
 # How many same-suffix search results to consider as candidates
 SEARCH_RESULT_LIMIT = 10
 PRICE_SANE_MAX = 1_000_000
+# Reliability of each match method: lower = more reliable. Candidates are ranked
+# by (method priority, price) so code matches always beat model matches, which
+# beat name matches.
+METHOD_PRIORITY = {"code": 0, "model": 1, "name": 2}
+# Cap on candidate pages fetched+verified per method (politeness + runtime).
+MAX_VERIFY_PER_METHOD = 6
+# How many MPN-style model numbers to try (most stores repeat the same one).
+MAX_MODEL_NUMBERS = 2
+# MPN-style model numbers are short alphanumeric codes with dashes/dots,
+# e.g. "GH-B370", "GSR-18V-150", "X100-PRO".
+_MODEL_RE = re.compile(r"^[A-Z0-9][A-Z0-9\-/_\.]{4,39}$")
+# Generic words ignored when comparing product names (EN/RO/DE/ES/FR/IT/PT/PL/HU),
+# including store branding words so titles like "Name X - Shop Name" clean up well.
+NAME_STOPWORDS = {
+    "the", "and", "for", "with", "without", "plus", "of", "a", "an", "at", "no", "on", "to", "is", "it", "by", "or",
+    "de", "la", "le", "les", "des", "el", "di", "da", "en", "et",
+    "original", "autentic", "authentic", "official", "genuin", "genuino",
+    "shop", "online", "store", "eshop", "magazin", "marketplace", "ecommerce", "mall",
+}
+# Words that mark a listing as an accessory for the product rather than the
+# product itself (e.g. original "iPhone 15" vs candidate "iPhone 15 Case").
+ACCESSORY_WORDS = {
+    "case", "cases", "casing", "cover", "covers", "capa", "folie", "funda",
+    "hulle", "housse", "etui", "etuis", "hus", "adapter", "adaptor",
+    "cable", "cables", "kabel", "charger", "incarcatot", "holder", "stand",
+    "mount", "brush", "brushes", "filter", "filters", "replacement",
+    "spare", "parts", "zubehoer", "accesories", "accesiorie", "accesorio",
+    "accesorios", "protector", "screen", "templet", "kit",
+}
 
 _BING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -81,7 +121,7 @@ AGGREGATOR_HOSTS = {
     "shopzilla.com",
 }
 
-_CODE_FIELDS = ("gtin", "gtin13", "gtin12", "gtin14", "upc", "ean", "sku", "mpn")
+_CODE_FIELDS = ("gtin", "gtin13", "gtin12", "gtin14", "upc", "ean", "sku", "mpn", "model")
 
 _ASIN_URL_RE = re.compile(r"/(?:dp|gp/product|product)/([A-Za-z0-9]{10})(?:[/?#]|$)")
 _ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
@@ -389,28 +429,23 @@ def _asin_candidates(asin: str, suffix: str) -> List[str]:
     return [f"https://amazon.{tld}/dp/{asin}"]
 
 
-def _price_url(url: str) -> Optional[float]:
-    """Fetch a URL and return a sane price, or None."""
-    try:
-        html = _fetch_page(url)
-    except Exception as e:
-        logger.debug(f"Could not fetch {url}: {e}")
-        return None
-    price = extract_price_auto(html, url)
-    if price is None or not (0 < price <= PRICE_SANE_MAX):
-        return None
-    return price
-
-
-def _verify_candidate(url: str, code: str) -> Optional[float]:
+def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Optional[float]:
     """Fetch a candidate page; return the price only if the exact product code is
-    present in the URL or the HTML (same-product proof) and a price is extractable."""
+    present in the URL or the HTML (same-product proof) and a price is extractable.
+
+    case_insensitive is used for MPN-style model numbers, which are uppercase in
+    metadata but may appear in any casing on the page.
+    """
     try:
         html = _fetch_page(url)
     except Exception as e:
         logger.debug(f"Could not fetch candidate {url}: {e}")
         return None
-    if code not in url and code not in html:
+    if case_insensitive:
+        present = code.lower() in url.lower() or code.lower() in (html or "").lower()
+    else:
+        present = code in url or code in (html or "")
+    if not present:
         logger.info(f"Candidate {url} rejected: product code {code} not present on the page")
         return None
     price = extract_price_auto(html, url)
@@ -420,8 +455,201 @@ def _verify_candidate(url: str, code: str) -> Optional[float]:
     return price
 
 
+def _iter_jsonld_objects(data):
+    """Yield dict objects from parsed JSON-LD, unwrapping @graph, lists and ItemGraph."""
+    def _walk(obj, depth=0):
+        if depth > 6:
+            return
+        if isinstance(obj, dict):
+            yield obj
+            for nested in obj.values():
+                if isinstance(nested, (dict, list)):
+                    yield from _walk(nested, depth + 1)
+        elif isinstance(obj, list):
+            for item in obj:
+                yield from _walk(item, depth + 1)
+
+    yield from _walk(data)
+
+
+def _clean_title(raw: str) -> str:
+    """Strip store branding from a page title, e.g. 'Name X - Store Name',
+    'Store: Name X' or 'Store | Name X'. Keeps the part with the most tokens
+    unique to it (store names repeat the brand, product parts carry the model)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    # " - " and " | " (spaces both sides) or ":" (branding prefix) or " » "/" > "
+    parts = [p.strip() for p in re.split(r"\s+-\s+|:\s+|\s+[\|>»]\s+", raw) if p.strip()]
+    if len(parts) <= 1:
+        return parts[0] if parts else raw
+    shared = set.intersection(*[set(_name_tokens(p)) for p in parts])
+
+    def uniqueness(part: str, index: int) -> tuple:
+        return (len(set(_name_tokens(part)) - shared), -index)
+
+    return max(enumerate(parts), key=lambda item: uniqueness(item[1], item[0]))[1]
+
+
+def _name_tokens(name: str) -> List[str]:
+    raw = re.sub(r"[^a-z0-9]+", " ", str(name).lower()).split()
+    return [t for t in raw if len(t) >= 2 and t not in NAME_STOPWORDS]
+
+
+def _names_match(original: str, candidate: str) -> bool:
+    """Conservative product-name similarity check for the "name" match method.
+
+    Passes when either >=60% of the original's meaningful tokens are kept, or the
+    compacted strings (letters/digits only) are at least 70% similar - the second
+    gate catches model numbers that split differently ('GSR 18V-150' vs 'GSR18V-150').
+    Candidates that add accessory vocabulary are rejected ('iPhone 15' vs 'iPhone 15 Case').
+    """
+    o_tokens = set(_name_tokens(original))
+    c_tokens = set(_name_tokens(candidate))
+    if len(o_tokens) < 2 or not c_tokens:
+        return False
+    inter = o_tokens & c_tokens
+    if not inter:
+        return False
+    ratio = difflib.SequenceMatcher(
+        None, re.sub(r"[^a-z0-9]", "", original.lower()), re.sub(r"[^a-z0-9]", "", candidate.lower())
+    ).ratio()
+    if len(inter) / len(o_tokens) < 0.6 and ratio < 0.70:
+        return False
+    if (c_tokens - o_tokens) & ACCESSORY_WORDS and not (o_tokens & ACCESSORY_WORDS):
+        return False
+    return True
+
+
+def _extract_product_name(soup: BeautifulSoup) -> Optional[str]:
+    """The product's display name from JSON-LD first, then og:title, then <title>."""
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or script.get_text() or "")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        for obj in _iter_jsonld_objects(data):
+            obj_type = str(obj.get("@type", "")).lower() if isinstance(obj, dict) else ""
+            if "product" in obj_type:
+                name = obj.get("name")
+                if isinstance(name, dict):  # multilingual {"en": "..."}
+                    name = next((v for v in name.values() if isinstance(v, str)), None)
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+    meta = soup.find("meta", attrs={"property": "og:title"})
+    if meta and meta.get("content") and meta["content"].strip():
+        return _clean_title(meta["content"])
+    if soup.title and soup.title.string:
+        return _clean_title(soup.title.string)
+    return None
+
+
+def _extract_model_names(soup: BeautifulSoup) -> List[str]:
+    """Manufacturer model numbers (MPN) that are not barcodes or ASINs.
+
+    Values from sku/mpn/model metadata are kept only when they look like a real
+    model code (short, alphanumeric with separators, at least one digit) — store
+    internal IDs and bare barcodes are rejected, exactly like in the code method.
+    """
+    models: List[str] = []
+    for field, value in _harvest_page_codes(soup):
+        if field not in ("sku", "mpn", "model"):
+            continue
+        cleaned = re.sub(r"\s+", "", str(value)).upper()
+        digits = re.sub(r"\D", "", cleaned)
+        if _valid_ean(digits) or _ASIN_RE.match(cleaned):
+            continue  # barcodes/ASINs are handled by the "code" method
+        # Real MPNs contain at least one letter; purely numeric values are store-
+        # internal IDs or malformed barcodes and are too generic to match on.
+        if not _MODEL_RE.match(cleaned) or len(cleaned) < 5 or not digits or not any(ch.isalpha() for ch in cleaned):
+            continue
+        if models and all(cleaned.startswith(m) or m.startswith(cleaned) for m in models):
+            continue
+        if len(models) >= MAX_MODEL_NUMBERS:
+            break
+        models.append(cleaned)
+    return models
+
+
+def _verify_name_candidate(url: str, original_name: str) -> Optional[float]:
+    """Fetch a candidate page; return the price only if the page carries a matching
+    product name and a price is extractable."""
+    try:
+        html = _fetch_page(url)
+    except Exception as e:
+        logger.debug(f"Could not fetch candidate {url}: {e}")
+        return None
+    page_name = _extract_product_name(BeautifulSoup(html, "html.parser"))
+    if not page_name or not _names_match(original_name, page_name):
+        logger.info(f"Candidate {url} rejected: page name '{page_name}' does not match '{original_name}'")
+        return None
+    price = extract_price_auto(html, url)
+    if price is None or not (0 < price <= PRICE_SANE_MAX):
+        logger.info(f"Candidate {url} verified but no usable price found")
+        return None
+    return price
+
+
+def _save_candidates(db, product: Product, pool: dict, current_price: Optional[float]):
+    """Upsert this run's verified candidates as pending links.
+
+    pool maps normalized URL -> [price, method]. Only candidates cheaper than the
+    current price are stored (all verified ones when no price was ever recorded),
+    ranked by (match-method reliability, price), capped at ALTERNATE_LINKS_MAX.
+    Already dismissed URLs are never resuggested; pending rows get a price refresh.
+    Returns (new_count, pending_count).
+    """
+    max_links = _max_links()
+    ranked = sorted(
+        pool.items(),
+        key=lambda kv: (METHOD_PRIORITY.get(kv[1][1], 99), kv[1][0] if kv[1][0] is not None else 1e9),
+    )
+    to_store = []
+    for url, (price, method) in ranked:
+        if current_price is not None and (price is None or price >= current_price):
+            continue
+        to_store.append((url, price, method))
+        if len(to_store) >= max_links:
+            break
+
+    dismissed_urls = {
+        row.url for row in db.query(LinkCandidate)
+        .filter(LinkCandidate.product_id == product.id, LinkCandidate.status == "dismissed")
+        .all()
+    }
+
+    new_count = 0
+    for url, price, method in to_store:
+        if url in dismissed_urls:
+            continue
+        row = db.query(LinkCandidate).filter(
+            LinkCandidate.product_id == product.id, LinkCandidate.url == url
+        ).first()
+        if row is None:
+            db.add(LinkCandidate(product_id=product.id, url=url, price=price, match_method=method, status="pending"))
+            new_count += 1
+            logger.info(f"{product.name}: new candidate [{method}] {url} at {price}")
+        elif row.status == "pending":
+            row.price = price
+            if row.match_method is None or METHOD_PRIORITY.get(method, 99) < METHOD_PRIORITY.get(row.match_method, 99):
+                row.match_method = method
+    db.commit()
+
+    pending_count = db.query(LinkCandidate).filter(
+        LinkCandidate.product_id == product.id, LinkCandidate.status == "pending"
+    ).count()
+    return new_count, pending_count
+
+
 def find_alternate_links(product_id: int) -> dict:
-    """Discover and save alternate links for one product. Returns a JSON-safe summary."""
+    """Discover alternate links for one product and store them as pending candidates.
+
+    Matches other-store pages by (1) EAN/UPC/GTIN/ASIN, (2) MPN-style model number,
+    (3) product name — first method that finds a cheaper candidate wins. Candidates
+    are cheaper than the current price, capped at ALTERNATE_LINKS_MAX, and only
+    become real alternate links when the user approves them in the UI.
+    Returns a JSON-safe summary.
+    """
     db = SessionLocal()
     try:
         product = db.query(Product).filter(Product.id == product_id).first()
@@ -430,7 +658,6 @@ def find_alternate_links(product_id: int) -> dict:
 
         main_host = _extract_main_domain(product.url)
         suffix = _domain_suffix(main_host)
-        existing = _get_alternative_urls(product)
 
         try:
             original_html = _fetch_page(product.url)
@@ -438,68 +665,119 @@ def find_alternate_links(product_id: int) -> dict:
             logger.error(f"Could not fetch original page for {product.name} ({product.url}): {e}")
             return {"success": False, "message": f"Could not fetch the original product page: {e}"}
 
+        current_price = get_current_price(db, product_id)
+        original_soup = BeautifulSoup(original_html, "html.parser")
+
+        # URLs never considered again: the main URL, current alternate links
+        # (including ones added through approved candidates) and URLs the user
+        # dismissed. Pending candidates are intentionally NOT excluded - they are
+        # re-verified on every run to refresh their prices.
+        excluded_urls = {product.url.rstrip("/")} | {u.rstrip("/") for u in _get_alternative_urls(product)}
+        excluded_urls |= {
+            row.url for row in db.query(LinkCandidate)
+            .filter(LinkCandidate.product_id == product.id, LinkCandidate.status == "dismissed")
+            .all()
+        }
+
+        pool: dict = {}  # normalized URL -> [price, method] (keeps the most reliable method)
+
+        def consider(url: str, price: float, method: str):
+            host = _host_of(url)
+            if not host or _is_same_site(host, main_host) or _is_aggregator(host):
+                return
+            norm = url.rstrip("/")
+            if norm in excluded_urls:
+                return
+            if norm not in pool:
+                pool[norm] = [price, method]
+                return
+            if METHOD_PRIORITY.get(method, 99) < METHOD_PRIORITY.get(pool[norm][1], 99):
+                pool[norm][1] = method
+            if pool[norm][0] is None or price < pool[norm][0]:
+                pool[norm][0] = price
+
+        def has_promising() -> bool:
+            """A candidate is worth presenting when it beats the current price
+            (any verified one when the product has no price recorded yet)."""
+            return any(
+                current_price is None or (p is not None and p < current_price)
+                for p, _m in pool.values()
+            )
+
+        def probe(method: str, query: str, verify_fn, cap: int = MAX_VERIFY_PER_METHOD) -> None:
+            """Web-search the exact query, then fetch+verify same-suffix candidate
+            pages until a promising candidate is found, candidates run out or the
+            per-method fetch cap is reached."""
+            logger.info(f"{product.name}: [{method}] searching {query!r} (suffix '{suffix}')...")
+            verified = 0
+            for url in _search_candidates(query, suffix, main_host):
+                if has_promising() or verified >= cap:
+                    break
+                if url.rstrip("/") in pool or url.rstrip("/") in excluded_urls:
+                    continue
+                time.sleep(FETCH_DELAY_SECONDS)
+                price = verify_fn(url)
+                if price is None:
+                    continue
+                verified += 1
+                consider(url, price, method)
+                logger.info(f"{product.name}: [{method}] verified candidate {url} at {price} {product.currency}")
+
+        # ── Method 1: globally unique code (EAN/UPC/GTIN/ASIN) ──
         code = _extract_product_code(original_html, product.url)
         if not code:
-            message = ("No globally unique product code (EAN/GTIN/UPC or ASIN) found on the "
-                       "original page - no alternate links added")
-            logger.info(f"{product.name}: {message}")
-            return {
-                "success": True,
-                "code": None,
-                "domain_suffix": suffix,
-                "message": message,
-                "saved_alternative_urls": existing,
-            }
-
-        code_type, code_value = code
-        logger.info(f"{product.name}: found product code {code_type.upper()} {code_value}, searching (suffix '{suffix}')...")
-
-        if code_type == "asin":
-            candidates = _asin_candidates(code_value, suffix)
+            logger.info(f"{product.name}: no globally unique code (EAN/UPC/GTIN/ASIN) on the original page")
         else:
-            candidates = _search_candidates(code_value, suffix, main_host)
+            code_type, code_value = code
+            logger.info(f"{product.name}: found product code {code_type.upper()} {code_value}")
+            if code_type == "asin":
+                # Same ASIN is the same product on any amazon domain
+                for url in _asin_candidates(code_value, suffix):
+                    if has_promising():
+                        break
+                    if url.rstrip("/") in pool or url.rstrip("/") in excluded_urls:
+                        continue
+                    time.sleep(FETCH_DELAY_SECONDS)
+                    price = _verify_candidate(url, code_value)
+                    if price is None:
+                        continue
+                    consider(url, price, "code")
+            else:
+                probe("code", code_value, lambda url: _verify_candidate(url, code_value))
 
-        pool: List[Tuple[str, Optional[float]]] = []
-        seen_urls = {product.url.rstrip("/")} | {u.rstrip("/") for u in existing}
-        for url in candidates:
-            if url.rstrip("/") in seen_urls:
-                continue
-            host = (urlparse(url).netloc or "").lower()
-            if not host or _is_same_site(host, main_host) or _is_aggregator(host):
-                continue
-            seen_urls.add(url.rstrip("/"))
-            time.sleep(FETCH_DELAY_SECONDS)
-            price = _verify_candidate(url, code_value)
-            if price is None:
-                continue
-            pool.append((url, price))
-            logger.info(f"{product.name}: verified candidate {url} at {price} {product.currency}")
+        # ── Method 2: manufacturer model number (MPN) ──
+        if not has_promising():
+            for model_number in _extract_model_names(original_soup):
+                if has_promising():
+                    break
+                probe("model", model_number,
+                      lambda url, mn=model_number: _verify_candidate(url, mn, case_insensitive=True))
 
-        for url in existing:
-            if _is_aggregator(_host_of(url)):
-                logger.info(f"{product.name}: dropping aggregator link {url}")
-                continue
-            time.sleep(FETCH_DELAY_SECONDS)
-            pool.append((url, _price_url(url)))
+        # ── Method 3: product name ──
+        if not has_promising():
+            product_name = _extract_product_name(original_soup)
+            if product_name:
+                probe("name", product_name, lambda url: _verify_name_candidate(url, product_name))
+            else:
+                logger.info(f"{product.name}: no product name found on the original page")
 
-        pool.sort(key=lambda item: (item[1] is None, item[1] if item[1] is not None else 0.0))
-        final_urls = [url for url, _price in pool[:_max_links()]]
+        new_count, pending_count = _save_candidates(db, product, pool, current_price)
 
-        if final_urls != existing:
-            product.alternative_urls = json.dumps(final_urls) if final_urls else None
-            db.commit()
-            logger.info(f"{product.name}: saved {len(final_urls)} alternate link(s): {final_urls}")
+        if new_count:
+            message = f"Found {new_count} new candidate link(s) - review them on the product page"
+        elif pending_count:
+            message = f"No new cheaper links found ({pending_count} candidate(s) still pending review)"
         else:
-            logger.info(f"{product.name}: no change to alternate links ({existing})")
-
-        new_count = sum(1 for url, _price in pool if url not in existing)
+            message = "No cheaper candidate links found"
+        logger.info(f"{product.name}: {message}")
         return {
             "success": True,
-            "code": {"type": code_type, "value": code_value},
+            "code": {"type": code[0], "value": code[1]} if code else None,
             "domain_suffix": suffix,
+            "current_price": current_price,
             "candidates_found": new_count,
-            "saved_alternative_urls": final_urls,
-            "message": f"Saved {len(final_urls)} alternate link(s) for {code_type.upper()} {code_value}",
+            "pending_candidates": pending_count,
+            "message": message,
         }
     except Exception as e:
         logger.error(f"Alternate-link discovery failed for product {product_id}: {e}")
@@ -531,11 +809,12 @@ def scheduled_alternate_discovery():
             results.append({
                 "product_id": product_id,
                 "name": name,
-                "saved": len(summary.get("saved_alternative_urls") or []),
+                "new_candidates": summary.get("candidates_found", 0),
+                "pending": summary.get("pending_candidates", 0),
                 "message": summary.get("message"),
             })
         except Exception as e:
             logger.error(f"Alternate-link discovery failed for {name} (id {product_id}): {e}")
-            results.append({"product_id": product_id, "name": name, "saved": 0, "message": str(e)})
+            results.append({"product_id": product_id, "name": name, "new_candidates": 0, "message": str(e)})
 
     logger.info(f"=== Alternate link discovery completed. Results: {results} ===")
