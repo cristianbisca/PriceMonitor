@@ -125,7 +125,7 @@
 
         /* Horizontal scroll wrapper so the table stays usable on narrow screens */
         .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        .products-table { min-width: 720px; }
+        .products-table { min-width: 500px; }
 
         table { width: 100%; border-collapse: collapse; }
         th { text-align: left; padding: 14px 24px; color: var(--text-secondary); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.5px; background: rgba(0,0,0,0.2); }
@@ -1101,19 +1101,17 @@
                 }
                 // Sort: active products on top, disabled ones at the bottom (stable within each group)
                 const sortedProducts = [...products].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
-                let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>New Links</th><th>Actions</th></tr></thead><tbody>';
+                let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
                 sortedProducts.forEach(p => {
-                    // Current/min prices are shown as text under the link to keep the table narrow on mobile
+                    // Current/min prices (plus the new-links badge) are shown as text under the link to keep the table narrow on mobile
                     let pricesHtml = '';
                     if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
                     if (p.min_price) pricesHtml += '<div class="price-line"><span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span></div>';
+                    if (p.candidate_count > 0) pricesHtml += '<div class="price-line"><span class="new-link-badge" title="' + p.candidate_count + ' candidate link(s) awaiting review">🔗 ' + p.candidate_count + '</span></div>';
                     if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
                     html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
                     html += '<td><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></td>';
                     html += '<td><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                    html += '<td>' + (p.candidate_count > 0
-                        ? '<span class="new-link-badge" title="' + p.candidate_count + ' candidate(s) awaiting review">🔗 ' + p.candidate_count + '</span>'
-                        : '<span style="color:var(--text-muted)">–</span>') + '</td>';
                     html += '<td class="actions-cell" onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></td>';
                     html += '</tr>';
                 });
