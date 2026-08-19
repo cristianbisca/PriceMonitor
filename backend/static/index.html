@@ -257,7 +257,6 @@
             }
             .products-table td:first-child { display: block; border-top: none; }
             .products-table td:first-child::before { display: block; margin-bottom: 8px; }
-            .product-url { max-width: none; white-space: normal; word-break: break-all; }
 
             /* Price history: table -> stacked cards */
             .history-table { display: block; }
@@ -1169,7 +1168,7 @@
                     if (p.candidate_count > 0) pricesHtml += '<div class="price-line"><span class="new-link-badge" title="' + p.candidate_count + ' candidate link(s) awaiting review">🔗 ' + p.candidate_count + '</span></div>';
                     if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
                     html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
-                    html += '<td data-label="Product"><div class="product-cell"><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url" title="' + escapeHtml(p.url) + '">' + escapeHtml(p.url) + '</div><div class="product-prices">' + pricesHtml + '</div></div></td>';
+                    html += '<td data-label="Product"><div class="product-cell"><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url"><a class="link-source" href="' + escapeHtml(p.url) + '" target="_blank" title="' + escapeHtml(p.url) + '" onclick="event.stopPropagation()">' + escapeHtml(extractMainDomain(p.url)) + '</a></div><div class="product-prices">' + pricesHtml + '</div></div></td>';
                     html += '<td data-label="Status"><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
                     html += '<td data-label="Actions" class="actions-cell" onclick="event.stopPropagation()"><span class="actions-group"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></span></td>';
                     html += '</tr>';
