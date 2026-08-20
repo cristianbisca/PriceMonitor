@@ -4,16 +4,20 @@ Alternate-link discovery service.
 Run either on a schedule (ALTERNATE_LINK_TIMES env var, same pattern as
 PRICE_CHECK_TIMES) or manually via the /find-alternates endpoint. For each
 product it searches the web for other stores selling the same product, using
-up to three matching methods in order of reliability (the first method that
+up to four matching methods in order of reliability (the first method that
 yields at least one candidate cheaper than the current price wins):
 
-  1. "code"  — the product's globally unique code (EAN/UPC/GTIN barcode or
+  1. "code"    — the product's globally unique code (EAN/UPC/GTIN barcode or
      Amazon ASIN) extracted from the original page; candidates must display
      that exact code on their page.
-  2. "model" — a manufacturer model number (MPN) from the page metadata;
+  2. "model"   — a manufacturer model number (MPN) from the page metadata;
      candidates must display that model number on their page.
-  3. "name"  — the product's full name (JSON-LD / Open Graph / <title>);
-     candidates must carry a matching product name on their page.
+  3. "name"    — the product's full name (JSON-LD / Open Graph / <title>),
+     searched as an exact phrase; candidates must carry a matching name.
+  4. "keyword" — the same product name searched as loose keywords (unquoted);
+     the looser query catches stores that phrase the title differently. Every
+     result is still verified by the strict name matcher, which rejects
+     accessories, a different size/multi-pack, or a different model tier.
 
 All methods are restricted to domains with the same country suffix (e.g. a
 .ro original -> only other .ro sites) and never consider the same store or
@@ -65,8 +69,8 @@ SEARCH_RESULT_LIMIT = 10
 PRICE_SANE_MAX = 1_000_000
 # Reliability of each match method: lower = more reliable. Candidates are ranked
 # by (method priority, price) so code matches always beat model matches, which
-# beat name matches.
-METHOD_PRIORITY = {"code": 0, "model": 1, "name": 2}
+# beat name matches, which beat loose keyword matches.
+METHOD_PRIORITY = {"code": 0, "model": 1, "name": 2, "keyword": 3}
 # Cap on candidate pages fetched+verified per method (politeness + runtime).
 MAX_VERIFY_PER_METHOD = 6
 # How many MPN-style model numbers to try (most stores repeat the same one).
@@ -92,6 +96,18 @@ ACCESSORY_WORDS = {
     "spare", "parts", "zubehoer", "accesories", "accesiorie", "accesorio",
     "accesorios", "protector", "screen", "templet", "kit",
 }
+# Capacity/quantity tokens (16gb, 2x8gb, 100g, 2l, ...). Used to reject a
+# candidate that is a different size of the same product line - a loose
+# (keyword) search surfaces these often (a 2x8GB kit for a 16GB single, an
+# 8GB listing for a 16GB one).
+_CAPACITY_UNITS = r"(?:gb|tb|mb|g|kg|l|ml)"
+_KIT_TOKEN_RE = re.compile(r"\d+x\d+" + _CAPACITY_UNITS + r"$")
+_CAPACITY_TOKEN_RE = re.compile(r"\d+(?:x\d+)?" + _CAPACITY_UNITS + r"$")
+# Model-tier words that mark a different product when the candidate adds them
+# (a loose search of "iPhone 15" returns "iPhone 15 Pro Max"). Only the tier the
+# candidate introduces is checked, so a product genuinely named "Pro" still
+# matches another "Pro" listing. ("plus" is already a name stopword.)
+VARIANT_WORDS = {"pro", "max", "ultra", "se", "mini", "lite"}
 
 _BING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -318,9 +334,14 @@ def _host_of(url: str) -> str:
         return ""
 
 
-def _bing_rss_urls(code: str) -> List[str]:
-    """Bing's RSS output carries plain result URLs (no /ck/a redirect wrapper)."""
-    search_url = "https://www.bing.com/search?q=" + quote(f'"{code}"') + "&format=rss"
+def _bing_rss_urls(code: str, quoted: bool = True) -> List[str]:
+    """Bing's RSS output carries plain result URLs (no /ck/a redirect wrapper).
+
+    quoted=True wraps the query in double quotes (exact phrase); quoted=False does
+    a plain keyword search (looser, used by the "keyword" method).
+    """
+    q = f'"{code}"' if quoted else code
+    search_url = "https://www.bing.com/search?q=" + quote(q) + "&format=rss"
     page = _fetch_page(search_url)
     urls = []
     for raw in re.findall(r"<link>\s*([^<]+?)\s*</link>", page):
@@ -347,9 +368,14 @@ def _resolve_bing_ck(href: str) -> str:
     return ""
 
 
-def _bing_html_urls(code: str) -> List[str]:
-    """Result URLs from Bing's HTML page; /ck/a redirects are resolved to real URLs."""
-    search_url = "https://www.bing.com/search?q=" + quote(f'"{code}"')
+def _bing_html_urls(code: str, quoted: bool = True) -> List[str]:
+    """Result URLs from Bing's HTML page; /ck/a redirects are resolved to real URLs.
+
+    quoted=True wraps the query in double quotes (exact phrase); quoted=False does
+    a plain keyword search (looser, used by the "keyword" method).
+    """
+    q = f'"{code}"' if quoted else code
+    search_url = "https://www.bing.com/search?q=" + quote(q)
     page = _fetch_page(search_url)
     soup = BeautifulSoup(page, "html.parser")
     urls = []
@@ -367,41 +393,44 @@ def _bing_html_urls(code: str) -> List[str]:
     return urls
 
 
-def _search_engines(code: str):
+def _search_engines(query: str, quoted: bool = True):
     """Yield result-URL lists from several search backends, best effort.
 
     No single engine is reliable from server IPs (DuckDuckGo frequently serves a
     reduced result set to automated clients), so every engine that answers is
-    merged in _search_candidates.
+    merged in _search_candidates. quoted=True wraps the query in double quotes
+    (exact phrase); quoted=False does a plain keyword search.
     """
-    quoted = f'"{code}"'
+    q = f'"{query}"' if quoted else query
     try:
-        yield _ddg_urls(_fetch_page("https://html.duckduckgo.com/html/?q=" + quote(quoted)), "a.result__a")
+        yield _ddg_urls(_fetch_page("https://html.duckduckgo.com/html/?q=" + quote(q)), "a.result__a")
     except Exception as e:
-        logger.warning(f"DuckDuckGo search failed for {code}: {e}")
+        logger.warning(f"DuckDuckGo search failed for {query}: {e}")
     try:
-        yield _ddg_urls(_fetch_page("https://lite.duckduckgo.com/lite/?q=" + quote(quoted)), "a.result-link")
+        yield _ddg_urls(_fetch_page("https://lite.duckduckgo.com/lite/?q=" + quote(q)), "a.result-link")
     except Exception as e:
-        logger.warning(f"DuckDuckGo Lite search failed for {code}: {e}")
+        logger.warning(f"DuckDuckGo Lite search failed for {query}: {e}")
     try:
-        yield _bing_rss_urls(code)
+        yield _bing_rss_urls(query, quoted)
     except Exception as e:
-        logger.warning(f"Bing RSS search failed for {code}: {e}")
+        logger.warning(f"Bing RSS search failed for {query}: {e}")
     try:
-        yield _bing_html_urls(code)
+        yield _bing_html_urls(query, quoted)
     except Exception as e:
-        logger.warning(f"Bing HTML search failed for {code}: {e}")
+        logger.warning(f"Bing HTML search failed for {query}: {e}")
 
 
-def _search_candidates(code: str, suffix: str, main_host: str, limit: int = SEARCH_RESULT_LIMIT) -> List[str]:
-    """Web-search the exact product code and keep results on the same domain suffix.
+def _search_candidates(query: str, suffix: str, main_host: str, limit: int = SEARCH_RESULT_LIMIT,
+                       quoted: bool = True) -> List[str]:
+    """Web-search the query and keep results on the same domain suffix.
 
     Merges results from several search engines (DuckDuckGo html/lite, Bing RSS/HTML)
     so one flaky or bot-limited engine does not leave the others untried.
+    quoted=True searches the exact phrase; quoted=False does a plain keyword search.
     """
     candidates: List[str] = []
     seen = set()
-    for index, engine_urls in enumerate(_search_engines(code)):
+    for index, engine_urls in enumerate(_search_engines(query, quoted)):
         if len(candidates) >= limit:
             break
         if index:
@@ -419,7 +448,7 @@ def _search_candidates(code: str, suffix: str, main_host: str, limit: int = SEAR
                 break
 
     if not candidates:
-        logger.info(f"No same-suffix search results for product code {code} (suffix '{suffix}')")
+        logger.info(f"No same-suffix search results for '{query}' (suffix '{suffix}')")
     return candidates
 
 
@@ -496,13 +525,43 @@ def _name_tokens(name: str) -> List[str]:
     return [t for t in raw if len(t) >= 2 and t not in NAME_STOPWORDS]
 
 
+def _kit_tokens(name: str) -> set:
+    """Multi-pack tokens such as '2x8gb' - a pack of separate units, not a single size."""
+    return {t for t in _name_tokens(name) if _KIT_TOKEN_RE.fullmatch(t)}
+
+
+def _capacity_tokens(name: str) -> set:
+    """Size tokens such as '16gb', '100g', '2l' (multi-packs like '2x8gb' count too)."""
+    return {t for t in _name_tokens(name) if _CAPACITY_TOKEN_RE.fullmatch(t)}
+
+
+def _same_capacity(original: str, candidate: str) -> bool:
+    """True when the candidate is not a different size/multi-pack of the product.
+
+    A candidate that adds a multi-pack the original doesn't carry (a 2x8GB kit for
+    a 16GB single) is rejected. The original's size must also appear in the
+    candidate, so a 16GB original never matches a bare 8GB listing. Products with
+    no size token (most electronics) are left to the token-overlap gate.
+    """
+    o_cap, c_cap = _capacity_tokens(original), _capacity_tokens(candidate)
+    o_kit, c_kit = _kit_tokens(original), _kit_tokens(candidate)
+    if c_kit - o_kit:
+        return False
+    if o_cap and not (o_cap & c_cap):
+        return False
+    return True
+
+
 def _names_match(original: str, candidate: str) -> bool:
-    """Conservative product-name similarity check for the "name" match method.
+    """Conservative product-name similarity check for the "name"/"keyword" methods.
 
     Passes when either >=60% of the original's meaningful tokens are kept, or the
     compacted strings (letters/digits only) are at least 70% similar - the second
     gate catches model numbers that split differently ('GSR 18V-150' vs 'GSR18V-150').
-    Candidates that add accessory vocabulary are rejected ('iPhone 15' vs 'iPhone 15 Case').
+    Candidates that add accessory vocabulary are rejected ('iPhone 15' vs
+    'iPhone 15 Case'), as are ones that are a different size/multi-pack
+    ('16GB' single vs '16GB (2x8GB)' kit, '16GB' vs '8GB') or a different model
+    tier the candidate introduces ('iPhone 15' vs 'iPhone 15 Pro Max').
     """
     o_tokens = set(_name_tokens(original))
     c_tokens = set(_name_tokens(candidate))
@@ -517,6 +576,10 @@ def _names_match(original: str, candidate: str) -> bool:
     if len(inter) / len(o_tokens) < 0.6 and ratio < 0.70:
         return False
     if (c_tokens - o_tokens) & ACCESSORY_WORDS and not (o_tokens & ACCESSORY_WORDS):
+        return False
+    if (c_tokens - o_tokens) & VARIANT_WORDS:
+        return False
+    if not _same_capacity(original, candidate):
         return False
     return True
 
@@ -704,13 +767,15 @@ def find_alternate_links(product_id: int) -> dict:
                 for p, _m in pool.values()
             )
 
-        def probe(method: str, query: str, verify_fn, cap: int = MAX_VERIFY_PER_METHOD) -> None:
-            """Web-search the exact query, then fetch+verify same-suffix candidate
+        def probe(method: str, query: str, verify_fn, cap: int = MAX_VERIFY_PER_METHOD,
+                  quoted: bool = True) -> None:
+            """Web-search the query, then fetch+verify same-suffix candidate
             pages until a promising candidate is found, candidates run out or the
-            per-method fetch cap is reached."""
+            per-method fetch cap is reached. quoted=False does a looser keyword
+            search (used by the "keyword" method)."""
             logger.info(f"{product.name}: [{method}] searching {query!r} (suffix '{suffix}')...")
             verified = 0
-            for url in _search_candidates(query, suffix, main_host):
+            for url in _search_candidates(query, suffix, main_host, quoted=quoted):
                 if has_promising() or verified >= cap:
                     break
                 if url.rstrip("/") in pool or url.rstrip("/") in excluded_urls:
@@ -753,13 +818,21 @@ def find_alternate_links(product_id: int) -> dict:
                 probe("model", model_number,
                       lambda url, mn=model_number: _verify_candidate(url, mn, case_insensitive=True))
 
-        # ── Method 3: product name ──
+        # ── Method 3: product name (exact phrase) ──
+        # ── Method 4: product name (loose keyword/title search) ──
         if not has_promising():
             product_name = _extract_product_name(original_soup)
-            if product_name:
-                probe("name", product_name, lambda url: _verify_name_candidate(url, product_name))
-            else:
+            if not product_name:
                 logger.info(f"{product.name}: no product name found on the original page")
+            else:
+                probe("name", product_name, lambda url: _verify_name_candidate(url, product_name))
+                if not has_promising():
+                    # An unquoted search of the same title catches stores that phrase
+                    # the product slightly differently (add a colour, the model code,
+                    # reorder specs). Results are still gated by the strict name
+                    # matcher, so different sizes/kits/tiers stay rejected.
+                    probe("keyword", product_name,
+                          lambda url: _verify_name_candidate(url, product_name), quoted=False)
 
         new_count, pending_count = _save_candidates(db, product, pool, current_price)
 

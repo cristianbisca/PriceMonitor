@@ -851,7 +851,7 @@ class LinkCandidateResponse(BaseModel):
     id: int
     url: str
     price: Optional[float]
-    match_method: Optional[str]  # "code" / "model" / "name"
+    match_method: Optional[str]  # "code" / "model" / "name" / "keyword"
     status: str
     savings: Optional[float] = None  # current_price - candidate.price
     found_at: datetime

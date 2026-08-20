@@ -159,6 +159,7 @@
         .method-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: 600; margin-left: 8px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); vertical-align: middle; }
         .method-badge.model { background: rgba(168, 85, 247, 0.18); color: #c084fc; }
         .method-badge.name { background: rgba(245, 158, 11, 0.18); color: var(--accent-yellow); }
+        .method-badge.keyword { background: rgba(16, 185, 129, 0.18); color: #34d399; }
 
         .actions-cell { display: flex; gap: 8px; }
         .actions-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1435,7 +1436,7 @@
                     '<div class="stat-item"><div class="stat-label">Total Checks</div><div class="stat-value">' + (p.price_count || 0) + '</div></div>';
             }
 
-            const CANDIDATE_METHOD_LABELS = { code: 'product code', model: 'model number', name: 'name match' };
+            const CANDIDATE_METHOD_LABELS = { code: 'product code', model: 'model number', name: 'name match', keyword: 'title keywords' };
 
             async function renderCandidates(productId) {
                 const section = document.getElementById('candidatesSection');

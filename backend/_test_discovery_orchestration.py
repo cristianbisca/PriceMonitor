@@ -1,8 +1,8 @@
 """Test the find_alternate_links orchestration with the network layer mocked.
 
-Covers: code method + early stop, model method, name method, no-cheaper outcome,
-URL exclusions (main / existing alternates / dismissed) and the ASIN branch.
-No network access is required.
+Covers: code method + early stop, model method, name method, keyword (loose title)
+method, no-cheaper outcome, URL exclusions (main / existing alternates / dismissed)
+and the ASIN branch. No network access is required.
 """
 import json
 import os
@@ -72,9 +72,13 @@ def run_with_mocks(pid, pages, searches, mock_name_verify=True):
             raise ConnectionError(f"mock: no page for {url}")
         return pages[url]
 
-    def fake_search(code, suffix, main_host, limit=10):
+    def fake_search(code, suffix, main_host, limit=10, quoted=True):
         calls.setdefault("search", []).append(code)
-        return list(searches.get(code, []))
+        calls.setdefault("search_quoted", []).append(quoted)
+        val = searches.get(code, [])
+        if isinstance(val, dict):  # per-quoted-ness results: {True: [...], False: [...]}
+            val = val.get(quoted, [])
+        return list(val)
 
     def fake_name_verify(url, original_name):
         calls.setdefault("name_verify", []).append(url)
@@ -183,8 +187,10 @@ def main():
     assert summary["success"] is True, summary
     assert summary["candidates_found"] == 0 and summary["pending_candidates"] == 0, summary
     assert summary["message"] == "No cheaper candidate links found", summary
-    # non-promising code result -> model (empty) and name methods still ran
-    assert calls["search"] == ["4744131012001", "Product D"], calls["search"]
+    # non-promising code result -> model (empty), name and the looser keyword method
+    # all still ran; the keyword method re-searches the same name unquoted.
+    assert calls["search"] == ["4744131012001", "Product D", "Product D"], calls["search"]
+    assert calls["search_quoted"] == [True, True, False], calls["search_quoted"]
     assert pending_for(pid) == {}, pending_for(pid)
 
     # ── E: main URL, existing alternates and dismissed URLs are excluded ──
@@ -227,7 +233,7 @@ def main():
             raise ConnectionError(f"mock: no page for {url}")
         return pages[url]
 
-    def fake_search(code, suffix, main_host, limit=10):
+    def fake_search(code, suffix, main_host, limit=10, quoted=True):
         raise AssertionError("web search must not run for the ASIN branch")
 
     orig_fetch, orig_search = alt._fetch_page, alt._search_candidates
@@ -241,6 +247,29 @@ def main():
     assert summary["code"] == {"type": "asin", "value": "B0ABC123XY"}, summary
     assert fetch_log == ["https://mea.ro/product-f", "https://amazon.ro/dp/B0ABC123XY"], fetch_log
     assert pending_for(pid) == {"https://amazon.ro/dp/B0ABC123XY": (30.0, "code")}, pending_for(pid)
+
+    # ── G: exact-phrase (name) search misses; the loose keyword (unquoted) search
+    #    finds a same-name store whose title phrases the product differently. The
+    #    2x8GB kit the phrase search surfaces is rejected by the capacity guard, and
+    #    the keyword hit is stored as a "keyword" candidate ──
+    pages = {
+        "https://mea.ro/product-g": jsonld_page("Memorie Kingston Fury 16GB DDR4 3200MHz", 800),
+        "https://kit.ro/kit": jsonld_page("Memorie Kingston Fury 16GB (2x8GB) DDR4 3200MHz", 500),
+        "https://altex.ro/ram": jsonld_page("Memorie Kingston Fury 16GB DDR4 3200MHz CL20", 600),
+    }
+    pid = seed_product("G", "https://mea.ro/product-g", price=800)
+    name = "Memorie Kingston Fury 16GB DDR4 3200MHz"
+    # quoted (name method) -> a 2x8GB kit; unquoted (keyword method) -> the real store
+    searches = {name: {True: ["https://kit.ro/kit"], False: ["https://altex.ro/ram"]}}
+    summary, calls = run_with_mocks(pid, pages, searches, mock_name_verify=False)
+    assert summary["success"] is True, summary
+    assert summary["candidates_found"] == 1, summary
+    assert calls["search"] == [name, name], calls["search"]
+    assert calls["search_quoted"] == [True, False], calls["search_quoted"]
+    assert calls["fetches"] == [
+        "https://mea.ro/product-g", "https://kit.ro/kit", "https://altex.ro/ram"
+    ], calls["fetches"]
+    assert pending_for(pid) == {"https://altex.ro/ram": (600.0, "keyword")}, pending_for(pid)
 
     print("ALL DISCOVERY ORCHESTRATION TESTS PASSED")
 

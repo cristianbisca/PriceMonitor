@@ -159,9 +159,39 @@ def _parse_price_string(price_str: str) -> Optional[float]:
         return None
 
 
+def _spec_price(spec) -> Optional[float]:
+    """Read the price from a schema.org (Unit)PriceSpecification: a mapping or list
+    carrying 'price' / 'minPrice' / 'value'."""
+    if isinstance(spec, list):
+        for item in spec:
+            value = _spec_price(item)
+            if value:
+                return value
+        return None
+    if isinstance(spec, dict):
+        for key in ('price', 'minPrice', 'value'):
+            if key in spec:
+                value = _parse_price_string(str(spec[key]))
+                if value:
+                    return value
+    return None
+
+
+def _offer_price(offer) -> Optional[float]:
+    """Price of a single schema.org Offer: a flat 'price' first, then a
+    'priceSpecification' (used by stores such as altex that omit the flat price)."""
+    if not isinstance(offer, dict):
+        return None
+    if 'price' in offer:
+        value = _parse_price_string(str(offer['price']))
+        if value:
+            return value
+    return _spec_price(offer.get('priceSpecification'))
+
+
 def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]:
     """Extract price from JSON-LD structured data.
-    
+
     When a URL is provided, attempts to match the Product @id against the URL
     to select the correct variant when multiple products are present.
     """
@@ -190,16 +220,15 @@ def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]
                 price = None
                 matched_url = False
                 
-                # Look for offers with price
+                # Look for offers with price (flat 'price' or schema.org 'priceSpecification')
                 offers = obj.get('offers', {})
-                if isinstance(offers, dict) and 'price' in offers:
-                    price = _parse_price_string(str(offers['price']))
+                if isinstance(offers, dict):
+                    price = _offer_price(offers)
                 elif isinstance(offers, list):
                     for offer in offers:
-                        if 'price' in offer:
-                            price = _parse_price_string(str(offer['price']))
-                            if price:
-                                break
+                        price = _offer_price(offer)
+                        if price:
+                            break
 
                 # Look directly at the object for price (if it's a Product)
                 if '@type' in obj and 'Product' in str(obj.get('@type', '')):
@@ -374,38 +403,59 @@ def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
 
 def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional[float]:
     """Recursively search a parsed JSON object for price patterns.
-    
+
     Looks for objects with 'value' and 'currency' keys (common SSR pattern),
+    structured price objects {'price': {'selling_price'/'base_price'/'value': ...}},
     or direct numeric 'price' fields.
+    Entries for virtual/add-on products (type_id == 'virtual', e.g. warranty
+    extensions) are skipped so their prices are never mistaken for the product's
+    own price.
     """
     if depth > max_depth:
         return None
-    
+
     if isinstance(obj, dict):
+        virtual = obj.get('type_id') == 'virtual'
+
         # Check for price object pattern: {"__typename":"Price","value":625,"currency":"RON"}
-        if 'value' in obj and 'currency' in obj:
+        if not virtual and 'value' in obj and 'currency' in obj:
             value = _parse_price_string(str(obj['value']))
             if value and value < 100000:
                 return value
-        
-        # Check for direct price key with numeric value
-        if 'price' in obj and isinstance(obj.get('price'), (int, float)):
-            price = float(obj['price'])
-            if 0 < price < 100000:
-                return price
-        
+
+        price = obj.get('price')
+
+        # Structured product price: {'selling_price':..., 'base_price':..., 'value':...}
+        # (e.g. Magento/altex embed {"price":{"base_price":699.99,"selling_price":699.99,...}}).
+        # selling_price wins: it is the actually charged (post-discount) price.
+        if isinstance(price, dict) and not virtual:
+            for key in ('selling_price', 'base_price', 'value', 'price'):
+                v = price.get(key)
+                if isinstance(v, str):
+                    pv = _parse_price_string(v)
+                    if pv and pv < 100000:
+                        return pv
+                elif isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < float(v) < 100000:
+                    return float(v)
+
+        # Check for direct price key with numeric value (skip virtual add-on entries)
+        if isinstance(price, (int, float)) and not isinstance(price, bool) and not virtual:
+            price_value = float(price)
+            if 0 < price_value < 100000:
+                return price_value
+
         # Recurse into children
         for key, val in obj.items():
             result = _search_json_for_price(val, depth + 1, max_depth)
             if result:
                 return result
-    
+
     elif isinstance(obj, list):
         for item in obj:
             result = _search_json_for_price(item, depth + 1, max_depth)
             if result:
                 return result
-    
+
     return None
 
 

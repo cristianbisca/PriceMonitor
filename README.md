@@ -8,7 +8,7 @@ A web application that monitors price changes for products across different e-co
 - **Per-User Data Isolation** — Each user has their own products, price history, and settings
 - **Product Management** — Add products by URL with auto-detect or custom CSS selector price extraction
 - **Multi-Source Price Comparison** — Each product can have alternative store URLs, checked alongside the main one and plotted as separate lines per store
-- **Suggested Alternate Links (candidates)** — Finds the same product on other stores (same country domain) by product code (EAN/GTIN/UPC/ASIN), model number, or product name; suggested links are only candidates until you review them: cheaper ones are shown in the product detail page, one to approve (starts being tracked on every price check) or dismiss (never suggested again). A "New Links Found" dashboard stat and a per-product badge track pending candidates
+- **Suggested Alternate Links (candidates)** — Finds the same product on other stores (same country domain) by product code (EAN/GTIN/UPC/ASIN), model number, product name, or its title keywords; suggested links are only candidates until you review them: cheaper ones are shown in the product detail page, one to approve (starts being tracked on every price check) or dismiss (never suggested again). A "New Links Found" dashboard stat and a per-product badge track pending candidates
 - **Scheduled Price Checks** — Configurable check times (default: 9 AM and 2 PM)
 - **Price History Charts** — Interactive Chart.js graphs showing price trends over time
 - **Minimum Price Tracking** — Highlights the lowest price ever recorded for each product
@@ -30,7 +30,7 @@ A web application that monitors price changes for products across different e-co
 │   │   └── (also declares TelegramNotification & AppSettings — currently unused)
 │   ├── main.py             # Application entry point
 │   ├── price_checker.py    # Web scraping & price extraction logic
-│   ├── alternate_links.py  # Finds the same product on other stores (code / model number / name) as reviewable candidates
+│   ├── alternate_links.py  # Finds the same product on other stores (code / model number / name / title keywords) as reviewable candidates
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
 │   ├── telegram_notifier.py# Telegram bot notifications (per-user chat ID support)
 │   ├── scheduler.py        # APScheduler for periodic checks (price checks + database backup)
@@ -328,7 +328,7 @@ The auto-detect scraper then tries these methods in order (most → least reliab
 
 1. **Embedded SSR JSON** — parses `__APOLLO_STATE__` / `__NEXT_DATA__` scripts and targets the right variant via the product ID in the URL (e.g. `/p-12345/`); recursive search for `{value, currency}` price objects. Best for SPAs like Notino.
 2. **`data-testid` attributes** — `pd-price`, `price-variant`, `product-price`, `current-price` (SPAs use these for test automation).
-3. **JSON-LD structured data** — `schema.org/Product` `offers.price`, with URL / `@id` matching to pick the correct variant when multiple products are present.
+3. **JSON-LD structured data** — `schema.org/Product` `offers.price` (falling back to `offers.priceSpecification.price` when the store files the price only there), with URL / `@id` matching to pick the correct variant when multiple products are present.
 4. **Meta tags** — Open Graph `product:price:amount`, schema.org `itemprop="price"`.
 5. **Amazon-specific selectors** — `.priceToPay`, `.apex-pricetopay-value`, `corePriceDisplay_desktop_feature_div .a-offscreen`, and a generic `.a-offscreen` scan (skipping "was:" / "rrp:" / null values). Gated to `amazon.*` hosts because Amazon splits its price into sub-spans that would drop decimals.
 6. **Generic CSS selectors** — elements with "price" in class/id, `[data-price]` attributes, `.product-price`, `.current-price`, `.selling-price`, etc.
@@ -342,11 +342,12 @@ If auto-detection fails, you can set a **custom CSS selector** when adding the p
 
 For each product the app can find the **same product on other stores** in the same country. Found links are **candidates** — they are not attached to the product automatically; you review them in the product detail page and **approve** (✓ Add Link → the URL becomes a tracked alternative source, checked on every price run and plotted as one line per store on the graph) or **dismiss** (✖ Dismiss → never suggested again). A "New Links Found" dashboard stat and a per-product 🔗 badge track pending candidates.
 
-Three matching methods are tried in order of reliability, and discovery stops as soon as at least one promising (cheaper) candidate is found:
+Four matching methods are tried in order of reliability, and discovery stops as soon as at least one promising (cheaper) candidate is found:
 
 1. **Product code** — EAN/GTIN/UPC barcode (check-digit validated) or Amazon ASIN, taken from the product page metadata (JSON-LD / meta tags / `content` attributes) or URL slug. For ASINs the candidate is built directly as `amazon.<country>/dp/<ASIN>` (no web search); otherwise the exact code is web-searched (DuckDuckGo + Bing). Store-internal IDs are rejected on purpose.
 2. **Model number (MPN)** — letters+digits model strings from page metadata (e.g. `GSR18V-150`); the search result page must contain the exact model string.
-3. **Product name** — a cleaned, store-brand-free product title from JSON-LD / meta tags / `<h1>`; the candidate page's name must be the same product (token recall / string similarity, with rejection of accessory or different-product names).
+3. **Product name** — a cleaned, store-brand-free product title from JSON-LD / meta tags / `<h1>`, web-searched as an **exact phrase**; the candidate page's name must be the same product (token recall / string similarity, with rejection of accessory names, different model tiers — e.g. a "Pro Max" for a plain model — and capacity mismatches, e.g. a 2x8GB kit for a 16GB single stick).
+4. **Title keywords** — only if method 3 found nothing: the same title is searched **unquoted** (Google-style keywords), which catches stores that phrase the product differently. Every hit still has to pass the same name-match gate as method 3, so the looser search doesn't let in unrelated products.
 
 For methods 1 and 3, only results from **other stores with the same country domain suffix** are kept (e.g. a `.ro` product only finds other `.ro` sites) and price-comparison aggregators (price.ro, compari.ro, idealo, …) are never kept. Every candidate page is fetched and its price extracted (only candidates cheaper than the current price are suggested; up to `ALTERNATE_LINKS_MAX` at a time).
 
