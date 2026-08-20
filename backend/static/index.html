@@ -588,7 +588,9 @@
             .header-actions { gap: 6px; }
             .header-actions .btn-settings, .header-actions .btn-add, .header-actions #signOutBtn { display: none; }
             .list-toolbar { width: 100%; }
-            .search-box { flex: 1; }
+            /* Search on its own full-width line below sort+count: a stable width keeps the
+               mobile caret in place while typing (shrinkage garbled the input otherwise). */
+            .search-box { order: 3; flex: 1 1 100%; }
             .search-box input { width: 100%; }
             .bottom-nav { display: block; }
             body[data-view="list"] .fab { display: flex; }
