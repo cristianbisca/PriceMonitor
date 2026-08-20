@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Price Monitor</title>
     
     <!-- PWA / Home Screen Shortcut -->
@@ -34,13 +34,17 @@
             --accent-yellow: #eab308;
             --accent-purple: #a855f7;
             --border-color: #334155;
-            --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            --shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 10px 30px -12px rgba(0, 0, 0, 0.45);
+            --shadow-lg: 0 16px 48px -12px rgba(0, 0, 0, 0.6);
+            --radius-card: 14px;
+            --safe-bottom: env(safe-area-inset-bottom, 0px);
+            --safe-top: env(safe-area-inset-top, 0px);
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
             background: var(--bg-primary);
             color: var(--text-primary);
             min-height: 100vh;
@@ -59,10 +63,11 @@
 
         /* Buttons */
         .btn {
-            padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer;
-            font-size: 0.9rem; font-weight: 600; transition: all 0.2s; display: inline-flex;
-            align-items: center; gap: 8px;
+            padding: 10px 18px; border: none; border-radius: 10px; cursor: pointer;
+            font-size: 0.9rem; font-weight: 600; transition: background 0.15s, transform 0.15s, border-color 0.15s; display: inline-flex;
+            align-items: center; gap: 8px; white-space: nowrap;
         }
+        .btn:active { transform: scale(0.97); }
         .btn-primary { background: var(--accent-blue); color: white; }
         .btn-primary:hover { background: #2563eb; }
         .btn-success { background: var(--accent-green); color: white; }
@@ -79,9 +84,11 @@
             gap: 20px; margin-bottom: 30px;
         }
         .stat-card {
-            background: var(--bg-card); border-radius: 12px; padding: 24px;
+            background: var(--bg-card); border-radius: var(--radius-card); padding: 22px;
             box-shadow: var(--shadow); border: 1px solid var(--border-color);
+            transition: transform 0.15s ease, border-color 0.15s ease;
         }
+        .stat-card:hover { transform: translateY(-2px); border-color: #475569; }
         .stat-card .label { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px; }
         .stat-card .value { font-size: 2rem; font-weight: 700; }
         .stat-card .sub { color: var(--text-muted); font-size: 0.8rem; margin-top: 4px; }
@@ -89,12 +96,14 @@
         /* Modal */
         .modal-overlay {
             display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.7); backdrop-filter: blur(2px); z-index: 100; justify-content: center; align-items: center;
+            padding: 24px 16px;
         }
         .modal-overlay.active { display: flex; }
         .modal {
-            background: var(--bg-secondary); border-radius: 16px; padding: 32px;
-            width: 90%; max-width: 500px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            background: var(--bg-secondary); border-radius: 18px; padding: 32px;
+            width: 100%; max-width: 500px; max-height: calc(100dvh - 48px); overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5);
         }
         .modal h2 { margin-bottom: 24px; font-size: 1.3rem; }
         .form-group { margin-bottom: 20px; }
@@ -116,7 +125,7 @@
         .source-badge.alt { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); }
 
         /* Products Table */
-        .products-section { background: var(--bg-card); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border-color); }
+        .products-section { background: var(--bg-card); border-radius: var(--radius-card); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border-color); }
         .section-header {
             display: flex; justify-content: space-between; align-items: center;
             padding: 20px 24px; border-bottom: 1px solid var(--border-color);
@@ -181,9 +190,10 @@
         .link-source:hover { text-decoration: underline; }
 
         .chart-container {
-            background: var(--bg-card); border-radius: 12px; padding: 24px;
+            background: var(--bg-card); border-radius: var(--radius-card); padding: 24px;
             box-shadow: var(--shadow); border: 1px solid var(--border-color); margin-bottom: 30px;
         }
+        .chart-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
         .chart-wrapper { position: relative; height: 400px; }
 
         .stats-row {
@@ -191,9 +201,11 @@
             gap: 16px; margin-bottom: 30px;
         }
         .stat-item {
-            background: var(--bg-card); border-radius: 12px; padding: 20px;
+            background: var(--bg-card); border-radius: var(--radius-card); padding: 18px;
             text-align: center; border: 1px solid var(--border-color);
+            transition: transform 0.15s ease, border-color 0.15s ease;
         }
+        .stat-item:hover { transform: translateY(-2px); border-color: #475569; }
         .stat-item .stat-label { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 8px; }
         .stat-item .stat-value { font-size: 1.4rem; font-weight: 700; }
 
@@ -304,11 +316,12 @@
         .settings-view.active { display: block; }
 
         .settings-card {
-            background: var(--bg-card); border-radius: 12px; padding: 32px;
+            background: var(--bg-card); border-radius: var(--radius-card); padding: 28px;
             box-shadow: var(--shadow); border: 1px solid var(--border-color);
-            max-width: 600px; margin-bottom: 24px;
+            max-width: 640px; margin-bottom: 24px;
         }
-        .settings-card h2 { font-size: 1.3rem; margin-bottom: 8px; }
+        .settings-card h2 { font-size: 1.25rem; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+        .settings-card h2 .icon { color: var(--accent-blue); }
         .settings-card .description { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5; }
 
         .setting-row {
@@ -488,14 +501,172 @@
                 padding: 28px 24px;
             }
         }
+
+        /* ===== Inline SVG icons ===== */
+        .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+        .icon-sm { width: 15px; height: 15px; }
+        .icon-lg { width: 22px; height: 22px; }
+        .icon-xl { width: 40px; height: 40px; stroke-width: 1.5; }
+        .icon.spin { animation: spin 1s linear infinite; }
+
+        /* Keyboard focus */
+        :focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+        input:focus-visible, select:focus-visible { outline: none; }
+
+        /* View switch transition */
+        .list-view:not(.hidden), .detail-view.active, .settings-view.active { animation: viewIn 0.18s ease-out; }
+        @keyframes viewIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+        /* Sticky header */
+        header { position: sticky; top: 0; z-index: 40; background: var(--bg-primary); }
+        header h1 { display: flex; align-items: center; gap: 10px; }
+
+        /* Badge with icon */
+        .new-link-badge { display: inline-flex; align-items: center; gap: 5px; }
+
+        /* List toolbar (search + sort) */
+        .section-header { flex-wrap: wrap; gap: 12px; }
+        .section-header h2 { display: flex; align-items: center; gap: 8px; }
+        .section-header h2 .icon { color: var(--accent-blue); }
+        .list-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .search-box { position: relative; display: flex; align-items: center; }
+        .search-box .icon { position: absolute; left: 12px; color: var(--text-muted); pointer-events: none; }
+        .search-box input { width: 210px; max-width: 100%; padding: 9px 12px 9px 38px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-size: 0.88rem; }
+        .sort-select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-size: 0.85rem; cursor: pointer; }
+        .list-count { color: var(--text-muted); font-size: 0.8rem; }
+
+        /* Skeleton loading */
+        .skeleton-row { display: flex; gap: 16px; align-items: center; padding: 20px 24px; border-top: 1px solid var(--border-color); }
+        .skeleton-row:first-child { border-top: none; }
+        .sk { background: linear-gradient(90deg, var(--bg-hover) 25%, #3d4d66 50%, var(--bg-hover) 75%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; border-radius: 6px; }
+        .sk-title { flex: 1; height: 14px; max-width: 340px; }
+        .sk-badge { width: 84px; height: 24px; border-radius: 12px; }
+        @keyframes shimmer { to { background-position: -200% 0; } }
+        .empty-state .icon { opacity: 0.45; margin-bottom: 4px; }
+
+        /* Chart range picker */
+        .range-picker { display: inline-flex; gap: 2px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 10px; padding: 3px; }
+        .range-picker button { border: none; background: transparent; color: var(--text-secondary); font-size: 0.78rem; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+        .range-picker button:hover { color: var(--text-primary); }
+        .range-picker button.active { background: var(--accent-blue); color: #fff; }
+
+        /* Backup location chip */
+        .loc { display: inline-flex; align-items: center; gap: 5px; }
+
+        /* Toast with icon + tap-to-dismiss */
+        .toast { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+        .toast .icon { margin-top: 2px; }
+
+        /* ===== Mobile shell: bottom nav + FAB + detail action bar ===== */
+        .bottom-nav {
+            display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+            background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+            border-top: 1px solid var(--border-color); padding: 4px 12px calc(6px + var(--safe-bottom));
+        }
+        .bottom-nav-inner { display: flex; max-width: 440px; margin: 0 auto; }
+        .bottom-nav button {
+            flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+            background: none; border: none; color: var(--text-muted); font-size: 0.68rem; font-weight: 600;
+            padding: 6px 0 2px; cursor: pointer; min-height: 50px; border-radius: 10px;
+        }
+        .bottom-nav button .icon { width: 22px; height: 22px; }
+        .bottom-nav button.active { color: var(--accent-blue); }
+        .fab {
+            display: none; position: fixed; right: 18px; bottom: calc(72px + var(--safe-bottom)); z-index: 55;
+            width: 58px; height: 58px; border-radius: 50%; border: none; align-items: center; justify-content: center;
+            background: var(--accent-blue); color: #fff; cursor: pointer; box-shadow: var(--shadow-lg);
+            transition: transform 0.15s ease, background 0.15s;
+        }
+        .fab:hover { background: #2563eb; }
+        .fab:active { transform: scale(0.95); }
+        .fab .icon { width: 26px; height: 26px; }
+
+        @media (max-width: 768px) {
+            .container { padding: 16px 14px calc(88px + var(--safe-bottom)); }
+            header { padding: 12px 0; margin-bottom: 20px; }
+            header h1 { font-size: 1.25rem; }
+            .header-actions { gap: 6px; }
+            .header-actions .btn-settings, .header-actions .btn-add, .header-actions #signOutBtn { display: none; }
+            .list-toolbar { width: 100%; }
+            .search-box { flex: 1; }
+            .search-box input { width: 100%; }
+            .bottom-nav { display: block; }
+            body[data-view="list"] .fab { display: flex; }
+            body[data-view="detail"] .bottom-nav, body[data-view="detail"] .fab { display: none; }
+            body[data-view="settings"] .fab { display: none; }
+            body[data-view="detail"] .container { padding-bottom: calc(118px + var(--safe-bottom)); }
+            body[data-view="detail"] .detail-actions {
+                position: fixed; left: 10px; right: 10px; bottom: calc(10px + var(--safe-bottom)); z-index: 55;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+                background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 16px;
+                padding: 10px; box-shadow: var(--shadow-lg);
+            }
+            body[data-view="detail"] .detail-actions .btn {
+                flex-direction: column; justify-content: center; gap: 4px; padding: 8px 2px; min-height: 58px; font-size: 0.66rem;
+            }
+            body[data-view="detail"] .detail-actions .btn .btn-text { font-size: 0.66rem; }
+            /* Bigger touch targets */
+            .actions-cell .btn { min-width: 44px; min-height: 44px; justify-content: center; padding: 6px; }
+            .modal-actions .btn, .settings-actions .btn, .candidate-actions .btn { min-height: 44px; }
+            .candidate-actions { width: 100%; }
+            .candidate-actions .btn { flex: 1; justify-content: center; }
+            /* Toasts top-center on phones */
+            .toast-container { top: calc(10px + var(--safe-top)); left: 14px; right: 14px; transform: none; align-items: center; }
+            .toast { max-width: none; width: 100%; }
+        }
+
+        /* Bottom-sheet modals on phones */
+        @media (max-width: 640px) {
+            .modal-overlay { align-items: flex-end; padding: 0; }
+            .modal {
+                width: 100%; max-width: none; max-height: 92dvh; border-radius: 20px 20px 0 0;
+                padding: 10px 20px calc(14px + var(--safe-bottom)); animation: sheetUp 0.22s ease-out;
+            }
+            .modal::before { content: ''; display: block; width: 42px; height: 4px; border-radius: 2px; background: var(--bg-hover); margin: 6px auto 14px; }
+            .modal-actions {
+                position: sticky; bottom: 0; margin: 20px -20px 0; padding: 14px 20px calc(12px + var(--safe-bottom));
+                background: var(--bg-secondary); border-top: 1px solid var(--border-color); border-radius: 20px 0 0 0;
+            }
+        }
+        @keyframes sheetUp { from { transform: translateY(30%); opacity: 0.3; } to { transform: none; opacity: 1; } }
+
+        /* Settings collapsible */
+        .settings-details { border: 1px solid var(--border-color); border-radius: 10px; padding: 4px 14px; }
+        .settings-details summary { cursor: pointer; font-weight: 600; font-size: 0.95rem; padding: 12px 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+        .settings-details summary:hover { color: var(--accent-blue); }
+        .settings-details[open] summary { border-bottom: 1px solid var(--border-color); }
+        .settings-details .detail-body { padding: 14px 0 8px; }
     </style>
 </head>
-<body>
+<body data-view="list">
+    <!-- Inline SVG icon sprite (stroke icons, currentColor) -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <symbol id="i-chart" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+        <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+        <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+        <symbol id="i-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
+        <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></symbol>
+        <symbol id="i-drive" viewBox="0 0 24 24"><line x1="22" y1="12" x2="2" y2="12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" y1="16" x2="6.01" y2="16"/><line x1="10" y1="16" x2="10.01" y2="16"/></symbol>
+        <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+        <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></symbol>
+        <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol>
+        <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></symbol>
+        <symbol id="i-back" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></symbol>
+    </svg>
+
     <!-- Auth Overlay (Login + Register) -->
     <div class="auth-overlay" id="authOverlay">
         <div class="auth-box">
             <div class="auth-logo">
-                <span class="auth-logo-icon">📊</span>
+                <span class="auth-logo-icon"><svg class="icon icon-xl" style="color: var(--accent-blue);" aria-hidden="true"><use href="#i-chart"/></svg></span>
                 <h1>Price <span>Monitor</span></h1>
                 <p class="auth-subtitle">Authentication Required</p>
             </div>
@@ -536,13 +707,13 @@
 
         <!-- Header -->
         <header>
-            <h1>📊 Price <span>Monitor</span></h1>
+            <h1><svg class="icon icon-lg" style="color: var(--accent-blue);" aria-hidden="true"><use href="#i-chart"/></svg> Price <span>Monitor</span></h1>
             <div class="header-actions">
                 <span id="healthStatus"><span class="health-dot health-ok"></span>Online</span>
-                <button class="btn btn-secondary btn-sm" onclick="showSettingsView()">⚙️ <span class="btn-text">Settings</span></button>
-                <button class="btn btn-secondary btn-sm" onclick="checkAllPrices()">🔄 <span class="btn-text">Check All Prices</span></button>
-                <button class="btn btn-primary" onclick="openAddModal()">+ <span class="btn-text">Add Product</span></button>
-                <button class="btn btn-danger btn-sm" id="signOutBtn" onclick="handleSignOut()" style="display:none;">Sign Out</button>
+                <button class="btn btn-secondary btn-sm btn-settings" onclick="showSettingsView()"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg> <span class="btn-text">Settings</span></button>
+                <button class="btn btn-secondary btn-sm" id="checkAllBtn" onclick="checkAllPrices()"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check All Prices</span></button>
+                <button class="btn btn-primary btn-add" onclick="openAddModal()"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> <span class="btn-text">Add Product</span></button>
+                <button class="btn btn-danger btn-sm" id="signOutBtn" onclick="handleSignOut()" style="display:none;"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg> <span class="btn-text">Sign Out</span></button>
             </div>
         </header>
 
@@ -576,19 +747,34 @@
             <div class="products-section">
                 <div class="section-header">
                     <h2>Monitored Products</h2>
+                    <div class="list-toolbar">
+                        <div class="search-box">
+                            <svg class="icon icon-sm" aria-hidden="true"><use href="#i-search"/></svg>
+                            <input type="search" id="productSearch" placeholder="Search by name or store..." oninput="onListQuery(this.value)" aria-label="Search products">
+                        </div>
+                        <select class="sort-select" id="productSort" onchange="onListSort(this.value)" aria-label="Sort products">
+                            <option value="smart" selected>Active first</option>
+                            <option value="name">Name A-Z</option>
+                            <option value="price-desc">Price: high to low</option>
+                            <option value="price-asc">Price: low to high</option>
+                        </select>
+                        <span class="list-count" id="listCount"></span>
+                    </div>
                 </div>
                 <div id="productsTableContainer">
-                    <div class="loading"><div class="spinner"></div><br>Loading products...</div>
+                    <div class="skeleton-row"><div class="sk sk-title"></div><div class="sk sk-badge"></div></div>
+                    <div class="skeleton-row"><div class="sk sk-title"></div><div class="sk sk-badge"></div></div>
+                    <div class="skeleton-row"><div class="sk sk-title"></div><div class="sk sk-badge"></div></div>
                 </div>
             </div>
         </div>
 
         <!-- Settings View -->
         <div class="settings-view" id="settingsView">
-            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;">← Back to Products</button>
+            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
 
             <div class="settings-card">
-                <h2>🔔 Telegram Notifications</h2>
+                <h2><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg> Telegram Notifications</h2>
                 <p class="description">Configure your personal Telegram notification settings. You'll receive price drop alerts and new minimum price notifications directly in Telegram.</p>
 
                 <!-- Bot Status -->
@@ -626,24 +812,28 @@
                 <!-- Actions -->
                 <div class="settings-actions">
                     <button class="btn btn-success" onclick="testTelegramNotification()" id="testTelegramBtn">
-                        📱 Send Test Notification
+                        <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> <span class="btn-text">Send Test Notification</span>
                     </button>
                 </div>
             </div>
 
             <div class="settings-card">
-                <h2>ℹ️ How to get your Chat ID</h2>
-                <p class="description" style="margin-bottom: 0;">
-                    1. Open Telegram and search for <strong>@userinfobot</strong><br>
-                    2. Send any message to the bot (e.g., "/start")<br>
-                    3. The bot will reply with your Chat ID - it's a number like <code style="background: var(--bg-primary); padding: 2px 6px; border-radius: 4px;">123456789</code><br>
-                    4. Paste that number into the "Telegram Chat ID" field above<br>
-                    5. Enable notifications and click "Send Test Notification" to verify it works
-                </p>
+                <details class="settings-details">
+                    <summary><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg> How to get your Chat ID (5 steps)</summary>
+                    <div class="detail-body">
+                        <p class="description" style="margin-bottom: 0;">
+                            1. Open Telegram and search for <strong>@userinfobot</strong><br>
+                            2. Send any message to the bot (e.g., "/start")<br>
+                            3. The bot will reply with your Chat ID - it's a number like <code style="background: var(--bg-primary); padding: 2px 6px; border-radius: 4px;">123456789</code><br>
+                            4. Paste that number into the "Telegram Chat ID" field above<br>
+                            5. Enable notifications and click "Send Test Notification" to verify it works
+                        </p>
+                    </div>
+                </details>
             </div>
 
             <div class="settings-card">
-                <h2>☁️ Database Backup &amp; Restore (Dropbox)</h2>
+                <h2><svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg> Database Backup &amp; Restore (Dropbox)</h2>
                 <p class="description">A consistent snapshot of the whole database is saved locally and uploaded to Dropbox. Backups older than the retention period are pruned automatically.</p>
 
                 <!-- Backup state -->
@@ -675,21 +865,27 @@
                 <!-- Actions -->
                 <div class="settings-actions">
                     <button class="btn btn-success" onclick="backupNow()" id="backupNowBtn">
-                        📤 Backup Now
+                        <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg> <span class="btn-text">Backup Now</span>
                     </button>
                     <button class="btn btn-secondary" onclick="loadBackupList()" id="backupListBtn">
-                        📋 Refresh Backup List
+                        <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Refresh Backup List</span>
                     </button>
                 </div>
 
                 <!-- Backup list -->
                 <div id="backupListContainer" style="margin-top: 20px;"></div>
             </div>
+
+            <div class="settings-actions" style="margin-top: 4px;">
+                <button class="btn btn-danger" id="settingsSignOutBtn" onclick="handleSignOut()" style="display:none;">
+                    <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg> <span class="btn-text">Sign Out</span>
+                </button>
+            </div>
         </div>
 
         <!-- Detail View -->
         <div class="detail-view" id="detailView">
-            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;">← Back to Products</button>
+            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
 
             <div class="detail-header">
                 <div class="detail-info">
@@ -697,10 +893,10 @@
                     <div id="detailLinks"></div>
                 </div>
                 <div class="detail-actions">
-                    <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()">✏️ Edit</button>
-                    <button class="btn btn-success btn-sm" onclick="checkCurrentProduct()">🔄 Check Now</button>
-                    <button class="btn btn-secondary btn-sm" id="findAlternatesBtn" title="Search the web for the same product on other stores in the same country" onclick="findCurrentAlternates()">🔎 Find Links</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()">🗑 Delete</button>
+                    <button class="btn btn-success btn-sm" id="checkNowBtn" onclick="checkCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check Now</span></button>
+                    <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> <span class="btn-text">Edit</span></button>
+                    <button class="btn btn-secondary btn-sm" id="findAlternatesBtn" title="Search the web for the same product on other stores in the same country" onclick="findCurrentAlternates()"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> <span class="btn-text">Find Links</span></button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> <span class="btn-text">Delete</span></button>
                 </div>
             </div>
 
@@ -710,7 +906,7 @@
             <!-- Candidate Links (proposed by discovery, awaiting review) -->
             <div class="products-section" id="candidatesSection" style="display:none; margin-bottom: 30px;">
                 <div class="section-header">
-                    <h2>🔗 New Links Found</h2>
+                    <h2><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg> New Links Found</h2>
                 </div>
                 <div class="candidates-description">Cheaper offers for the same product found on other stores. Add a link to start tracking its price too, or dismiss it if it is not the same product.</div>
                 <div id="candidatesList"></div>
@@ -718,7 +914,14 @@
 
             <!-- Chart -->
             <div class="chart-container">
-                <h3 style="margin-bottom: 20px;">Price History</h3>
+                <div class="chart-head">
+                    <h3>Price History</h3>
+                    <div class="range-picker" id="rangePicker" role="group" aria-label="Chart range">
+                        <button type="button" data-range="7">7D</button>
+                        <button type="button" data-range="30">30D</button>
+                        <button type="button" data-range="0" class="active">All</button>
+                    </div>
+                </div>
                 <div class="chart-wrapper">
                     <canvas id="priceChart"></canvas>
                 </div>
@@ -731,6 +934,25 @@
             </div>
         </div>
     </div>
+
+    <!-- Mobile bottom navigation -->
+    <nav class="bottom-nav" id="bottomNav" aria-label="Main navigation">
+        <div class="bottom-nav-inner">
+            <button id="navListBtn" class="active" onclick="navToList()">
+                <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>
+                <span>Products</span>
+            </button>
+            <button id="navSettingsBtn" onclick="navToSettings()">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                <span>Settings</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Mobile floating add button -->
+    <button class="fab" id="fabAdd" onclick="openAddModal()" aria-label="Add product" title="Add product">
+        <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
+    </button>
 
     <!-- Add Product Modal -->
     <div class="modal-overlay" id="addModal">
@@ -914,13 +1136,14 @@
                 }
             }
 
-            function showSignOutButton() {
-                document.getElementById('signOutBtn').style.display = 'inline-flex';
+            function setSignOutButtons(visible) {
+                document.getElementById('signOutBtn').style.display = visible ? 'inline-flex' : 'none';
+                const sBtn = document.getElementById('settingsSignOutBtn');
+                if (sBtn) sBtn.style.display = visible ? 'inline-flex' : 'none';
             }
 
-            function hideSignOutButton() {
-                document.getElementById('signOutBtn').style.display = 'none';
-            }
+            function showSignOutButton() { setSignOutButtons(true); }
+            function hideSignOutButton() { setSignOutButtons(false); }
 
             window.handleSignOut = async function() {
                 // Clear local token immediately
@@ -1118,12 +1341,21 @@
             // Get the authToken from localStorage (persists across sessions)
             const authToken = localStorage.getItem('pm_token');
 
+            function icon(name, cls) {
+                return '<svg class="icon' + (cls ? ' ' + cls : '') + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+            }
+
+            const TOAST_ICONS = { success: 'check', error: 'alert', info: 'info' };
+
             function showToast(message, type) {
                 type = type || 'info';
                 const container = document.getElementById('toastContainer');
                 const toast = document.createElement('div');
                 toast.className = 'toast toast-' + type;
-                toast.textContent = message;
+                toast.setAttribute('role', 'status');
+                toast.innerHTML = icon(TOAST_ICONS[type] || 'info') + '<span style="flex:1"></span>';
+                toast.lastChild.textContent = message;
+                toast.onclick = () => toast.remove();
                 container.appendChild(toast);
                 setTimeout(() => toast.remove(), 4000);
             }
@@ -1136,6 +1368,7 @@
                 } catch (err) {
                     console.error(err);
                     showToast('Failed to load products', 'error');
+                    if (products.length === 0) renderProducts(); // replace skeleton with empty state
                 }
             }
 
@@ -1151,14 +1384,37 @@
                 document.getElementById('priceDrops').textContent = drops;
             }
 
+            let listQuery = '';
+            let listSort = 'smart';
+
+            window.onListQuery = function(v) { listQuery = v.trim().toLowerCase(); renderProducts(); };
+            window.onListSort = function(v) { listSort = v; renderProducts(); };
+
             function renderProducts() {
                 const container = document.getElementById('productsTableContainer');
-                if (products.length === 0) {
-                    container.innerHTML = '<div class="empty-state"><h3>No products being monitored</h3><p>Add a product to start tracking price changes</p></div>';
+                const listCount = document.getElementById('listCount');
+                let list = products;
+                if (listQuery) {
+                    list = list.filter(p => (p.name || '').toLowerCase().includes(listQuery) || (p.url || '').toLowerCase().includes(listQuery));
+                }
+                // Default sort: active products on top, disabled ones at the bottom (stable within each group)
+                const compare = (a, b) => {
+                    if (listSort === 'name') return (a.name || '').localeCompare(b.name || '');
+                    if (listSort === 'price-desc') return (b.current_price || 0) - (a.current_price || 0);
+                    if (listSort === 'price-asc') return (a.current_price || 0) - (b.current_price || 0);
+                    return (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0);
+                };
+                const sortedProducts = [...list].sort(compare);
+                if (listCount) {
+                    listCount.textContent = listQuery ? sortedProducts.length + ' of ' + products.length + ' products' : '';
+                }
+                if (sortedProducts.length === 0) {
+                    container.innerHTML = '<div class="empty-state">' + icon(listQuery ? 'search' : 'chart', 'icon-xl') +
+                        (listQuery
+                            ? '<h3>No matching products</h3><p>Try a different search term</p>'
+                            : '<h3>No products being monitored</h3><p>Add a product to start tracking price changes</p>') + '</div>';
                     return;
                 }
-                // Sort: active products on top, disabled ones at the bottom (stable within each group)
-                const sortedProducts = [...products].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
                 let html = '<div class="table-scroll"><table class="products-table"><thead><tr><th>Product</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
                 sortedProducts.forEach(p => {
                     // Current/min prices (plus the new-links badge) are shown as text under the link;
@@ -1166,12 +1422,12 @@
                     let pricesHtml = '';
                     if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
                     if (p.min_price) pricesHtml += '<div class="price-line"><span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span></div>';
-                    if (p.candidate_count > 0) pricesHtml += '<div class="price-line"><span class="new-link-badge" title="' + p.candidate_count + ' candidate link(s) awaiting review">🔗 ' + p.candidate_count + '</span></div>';
+                    if (p.candidate_count > 0) pricesHtml += '<div class="price-line"><span class="new-link-badge" title="' + p.candidate_count + ' candidate link(s) awaiting review">' + icon('link', 'icon-sm') + ' ' + p.candidate_count + '</span></div>';
                     if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
                     html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
                     html += '<td data-label="Product"><div class="product-cell"><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url"><a class="link-source" href="' + escapeHtml(p.url) + '" target="_blank" title="' + escapeHtml(p.url) + '" onclick="event.stopPropagation()">' + escapeHtml(extractMainDomain(p.url)) + '</a></div><div class="product-prices">' + pricesHtml + '</div></div></td>';
                     html += '<td data-label="Status"><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                    html += '<td data-label="Actions" class="actions-cell" onclick="event.stopPropagation()"><span class="actions-group"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">🔄</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">✏️</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">🗑</button></span></td>';
+                    html += '<td data-label="Actions" class="actions-cell" onclick="event.stopPropagation()"><span class="actions-group"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">' + icon('refresh') + '</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">' + icon('edit') + '</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">' + icon('trash') + '</button></span></td>';
                     html += '</tr>';
                 });
                 html += '</tbody></table></div>';
@@ -1378,7 +1634,7 @@
             window.findCurrentAlternates = async function() {
                 if (currentProductId === null) return;
                 const btn = document.getElementById('findAlternatesBtn');
-                if (btn) { btn.disabled = true; btn.textContent = '⏳ Searching...'; }
+                if (btn) { btn.disabled = true; btn.innerHTML = icon('refresh', 'spin') + '<span class="btn-text">Searching…</span>'; }
                 try {
                     const r = await window.api('POST', '/api/products/' + currentProductId + '/find-alternates');
                     if (r.success === false) {
@@ -1394,18 +1650,7 @@
                 } catch (err) {
                     showToast(err.message || 'Alternate link search failed', 'error');
                 } finally {
-                    if (btn) { btn.disabled = false; btn.textContent = '🔎 Find Links'; }
-                }
-            };
-
-            window.checkAllPrices = async function() {
-                showToast('Checking all products...', 'info');
-                try {
-                    const result = await window.api('POST', '/api/check-all');
-                    showToast('Checked ' + result.successful + '/' + result.total + ' products', 'success');
-                    loadProducts();
-                } catch (err) {
-                    showToast('Failed to check prices', 'error');
+                    if (btn) { btn.disabled = false; btn.innerHTML = icon('search') + '<span class="btn-text">Find Links</span>'; }
                 }
             };
 
@@ -1425,6 +1670,7 @@
                 if (pushHistory) {
                     window.history.pushState({ view: 'detail', id: id }, '');
                 }
+                setView('detail');
             };
 
             function renderDetailStats(p) {
@@ -1526,11 +1772,28 @@
                 }
             };
 
+            function setView(name) {
+                document.body.dataset.view = name;
+                const listBtn = document.getElementById('navListBtn');
+                const settingsBtn = document.getElementById('navSettingsBtn');
+                if (listBtn) listBtn.classList.toggle('active', name === 'list');
+                if (settingsBtn) settingsBtn.classList.toggle('active', name === 'settings');
+            }
+
+            window.navToList = function() {
+                if (document.body.dataset.view !== 'list') goBackToList();
+            };
+
+            window.navToSettings = function() {
+                if (document.body.dataset.view !== 'settings') showSettingsView();
+            };
+
             window.showListView = function() {
                 hideAllViews();
                 document.getElementById('listView').classList.remove('hidden');
                 currentProductId = null;
                 if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
+                setView('list');
             };
 
             // "Back to Products" button: prefer the browser history so it stays in sync
@@ -1578,6 +1841,7 @@
                 if (pushHistory) {
                     window.history.pushState({ view: 'settings' }, '');
                 }
+                setView('settings');
             };
 
             async function loadTelegramSettings() {
@@ -1636,7 +1900,7 @@
 
                 var btn = document.getElementById('testTelegramBtn');
                 btn.disabled = true;
-                btn.textContent = '⏳ Sending...';
+                btn.innerHTML = icon('refresh', 'spin') + '<span class="btn-text">Sending…</span>';
 
                 try {
                     // Ensure chat id is saved before testing
@@ -1655,7 +1919,7 @@
                     showToast('Test failed: ' + err.message, 'error');
                 } finally {
                     btn.disabled = false;
-                    btn.textContent = '📱 Send Test Notification';
+                    btn.innerHTML = icon('send') + '<span class="btn-text">Send Test Notification</span>';
                 }
             };
 
@@ -1732,7 +1996,7 @@
             window.backupNow = async function() {
                 var btn = document.getElementById('backupNowBtn');
                 btn.disabled = true;
-                btn.textContent = '⏳ Backing up...';
+                btn.innerHTML = icon('refresh', 'spin') + '<span class="btn-text">Backing up…</span>';
 
                 try {
                     var res = await window.api('POST', '/api/backup/run');
@@ -1748,7 +2012,7 @@
                     showToast('Backup failed: ' + extractApiError(err), 'error');
                 } finally {
                     btn.disabled = false;
-                    btn.textContent = '📤 Backup Now';
+                    btn.innerHTML = icon('upload') + '<span class="btn-text">Backup Now</span>';
                 }
             };
 
@@ -1770,7 +2034,9 @@
                     // so a table column layout is unreadable (especially on phone).
                     var html = '<div class="backup-list">';
                     shown.forEach(function(item) {
-                        var location = item.location === 'dropbox' ? '☁️ Dropbox' : '💾 Local';
+                        var location = item.location === 'dropbox'
+                            ? '<span class="loc">' + icon('cloud', 'icon-sm') + ' Dropbox</span>'
+                            : '<span class="loc">' + icon('drive', 'icon-sm') + ' Local</span>';
                         html += '<div class="backup-row"><div class="backup-name">' + escapeHtml(item.name) + '</div><div class="backup-meta">' + location + ' · ' + formatBytes(item.size) + ' · ' + formatBackupDate(item.created) + '</div></div>';
                     });
                     html += '</div>';
@@ -1786,6 +2052,7 @@
 async function loadPriceHistory(id) {
                 try {
                     const history = await window.api('GET', '/api/products/' + id + '/prices/reverse');
+                    historyCache = { id: id, currency: (history[0] && history[0].currency) || 'RON', entries: history };
                     if (history.length === 0) {
                         document.getElementById('historyTableContainer').innerHTML = '<div class="empty-state"><h3>No price data yet</h3><p>Click "Check Now" to get the first price reading</p></div>';
                         return;
@@ -1806,9 +2073,23 @@ async function loadPriceHistory(id) {
                 }
             }
 
+            let chartRange = 0; // 0 = all history, otherwise window size in days
+            let historyCache = null; // { id, currency, entries } for range switching without refetch
+
             function renderChart(history) {
                 const ctx = document.getElementById('priceChart').getContext('2d');
                 if (priceChartInstance) priceChartInstance.destroy();
+
+                if (historyCache) historyCache.currency = history[0] && history[0].currency;
+                const currency = (historyCache && historyCache.currency) || 'RON';
+                if (chartRange > 0) {
+                    const cutoff = Date.now() - chartRange * 86400000;
+                    history = history.filter(e => new Date(e.checked_at).getTime() >= cutoff);
+                }
+                if (history.length === 0) {
+                    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+                    return;
+                }
 
                 // Group entries by source domain so each price source gets its own line.
                 // The first source chronologically is the main one and keeps the blue color;
@@ -1843,7 +2124,7 @@ async function loadPriceHistory(id) {
                             tooltip: {
                                 backgroundColor: '#1e293b', titleColor: '#f1f5f9', bodyColor: '#94a3b8',
                                 borderColor: '#334155', borderWidth: 1, padding: 12,
-                                callbacks: { label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' RON'; } }
+                                callbacks: { label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + ' ' + currency; } }
                             }
                         },
                         scales: {
@@ -1878,6 +2159,31 @@ async function loadPriceHistory(id) {
                 window.showListView();
             };
 
+            // Chart range picker: re-render from cache, no refetch
+            document.getElementById('rangePicker').addEventListener('click', function(e) {
+                const btn = e.target.closest('button');
+                if (!btn) return;
+                chartRange = parseInt(btn.dataset.range, 10) || 0;
+                document.querySelectorAll('#rangePicker button').forEach(b => b.classList.toggle('active', b === btn));
+                if (historyCache) renderChart(historyCache.entries);
+            });
+
+            window.checkAllPrices = async function() {
+                showToast('Checking all products...', 'info');
+                const btn = document.getElementById('checkAllBtn');
+                if (btn) { btn.disabled = true; btn.innerHTML = icon('refresh', 'spin') + '<span class="btn-text">Checking…</span>'; }
+                try {
+                    const result = await window.api('POST', '/api/check-all');
+                    showToast('Checked ' + result.successful + '/' + result.total + ' products', 'success');
+                    loadProducts();
+                } catch (err) {
+                    showToast('Failed to check prices', 'error');
+                } finally {
+                    if (btn) { btn.disabled = false; btn.innerHTML = icon('refresh') + '<span class="btn-text">Check All Prices</span>'; }
+                }
+            };
+
+            showListView(); // ensure list view + nav tabs are in sync (also resets stale sub-view after re-login)
             setInterval(loadProducts, 60000);
             loadProducts();
         }
