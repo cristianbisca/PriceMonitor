@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
@@ -58,17 +59,56 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Middleware order matters: the LAST app.add_middleware() call becomes the
+# OUTERMOST layer. Desired order (outer → inner):
+#   SecurityHeadersMiddleware → CORSMiddleware (only if PM_CORS_ORIGINS is set) → AuthMiddleware
+# Security headers must be outermost so they are present on every response,
+# including the 401s AuthMiddleware returns without reaching the app.
+
+# 'unsafe-inline' for script/style is required because the single-file SPA
+# uses inline event handlers and style attributes; the external
+# cdn.jsdelivr.net scripts are SRI-locked in index.html.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
 )
 
-# Add authentication middleware (after CORS so headers are included)
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds Content-Security-Policy and anti-clickjacking headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        response.headers["X-Frame-Options"] = "DENY"
+        return response
+
+
 app.add_middleware(AuthMiddleware)
+
+# CORS only for explicitly allowed origins (PM_CORS_ORIGINS, comma-separated).
+# The SPA is served same-origin, so the default is no CORS headers at all —
+# a wildcard origin with credentials would let any site read the API responses.
+cors_origins = [o.strip() for o in os.getenv("PM_CORS_ORIGINS", "").split(",") if o.strip()]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Added last → outermost (see note above)
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def get_user_from_request(request: Request) -> dict:

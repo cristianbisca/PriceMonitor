@@ -91,6 +91,7 @@ python main.py
 | `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
+| `PM_CORS_ORIGINS` | *(empty = disabled)* | Comma-separated CORS origins for cross-origin API calls (the SPA is same-origin, so empty is the default) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `TELEGRAM_CHAT_ID` | *(empty)* | Global fallback chat ID(s), comma-separated — used only when a user hasn't set their own via the web UI |
 | `BACKUP_ENABLED` | `true` | Enable/disable database backups |
@@ -112,6 +113,11 @@ The application uses **token-based authentication**:
 - Token validity: **7 days** (tokens are persisted in browser localStorage)
 - Tokens are passed via `X-PM-Token` header or `Authorization: Bearer <token>` header
 - Sign-up can be disabled by setting `ENABLE_SIGNUP=false`
+
+## 🔒 Security
+
+- All responses carry a `Content-Security-Policy` header (same-origin by default; the three pinned CDN libraries are the only allowed external script source and are integrity-checked via SRI in `index.html`) and `X-Frame-Options: DENY` + `frame-ancestors 'none'` (anti-clickjacking).
+- The API has no open CORS by default — set `PM_CORS_ORIGINS` only if you need to call it from another origin.
 
 ## 📱 Telegram Setup
 
