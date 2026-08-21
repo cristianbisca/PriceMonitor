@@ -40,6 +40,7 @@ PriceMonitor/
 │   ├── price_monitor.db     # Local dev SQLite file (Docker uses /app/data/price_monitor.db)
 │   └── static/
 │       ├── index.html       # THE ENTIRE frontend SPA (vanilla JS, Chart.js, no build step)
+│       ├── vendor/          # self-hosted chart.js / luxon / adapter (same-origin, see §security)
 │       ├── manifest.json    # PWA manifest
 │       └── icon-*.png       # PWA icons (16/32/192/512)
 ├── Dockerfile               # python:3.12-slim, EXPOSE 8000 (cosmetic; real port = PORT env)
@@ -60,6 +61,7 @@ PriceMonitor/
 ## Conventions (follow these)
 
 - **Frontend is one file** — `backend/static/index.html`. No build tooling; keep changes self-contained. All API calls send the `X-PM-Token` header (see the `window.api` helper in the file).
+- **CSP forbids `unsafe-inline`** — the SPA's inline `<style>`/`<script>` get a per-request nonce injected by `serve_frontend` (see PROJECT_NOTES §security). So in `index.html`: **no inline `onclick`/`onchange`/… attributes and no inline `style="…"`**. Bind static elements with `addEventListener` in the IIFE's `bindStaticEvents()` (once, not in `initApp()`); for re-rendered table/candidate rows use `data-action`/`data-id` + container-level delegation; use the `.is-hidden`/`.text-*`/`.form-hint` utility classes for one-off styles. JS may still set `el.style.*` (CSSOM) — that's allowed.
 - **Auth**: tokens are base64-JSON `{user_id, username, ts}`, 7-day TTL, validated against the DB on every request by `AuthMiddleware`. Endpoints read the user from `request.state.user` (set by middleware) via `get_user_from_request()` — never via `require_auth()` (dead, broken, see gotchas).
 - **Per-user data isolation**: every product query filters by `user_id` from the token. New endpoints MUST enforce this.
 - **Timezones**: store UTC in the DB; convert with the `TZ` env for display. For matplotlib, convert then **strip tzinfo** (naive).

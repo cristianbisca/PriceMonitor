@@ -16,9 +16,10 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/static/icon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/static/icon-16.png">
     
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-e6nUZLBkQ86NJ6TVVKAeSaK8jWa3NhkYWZFomE39AvDbQWeie9PlQqM3pmYW5d1g" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js" integrity="sha384-8IfMRI2dZTiLP9YEdmV1crHEnWdDyLYVokg18OO8HivLDMuK1rbsaFRSQl7rgQ0D" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.0/dist/chartjs-adapter-luxon.umd.min.js" integrity="sha384-fk+M4yhpxYE+VkwQ2+vmckCYznJk6s9cNf6UTvfvqpq1WsKHO1AEadqC5ylYHgua" crossorigin="anonymous"></script>
+    <!-- Self-hosted (same-origin, no external script host needed for the CSP) -->
+    <script src="/static/vendor/chart.umd.min.js"></script>
+    <script src="/static/vendor/luxon.min.js"></script>
+    <script src="/static/vendor/chartjs-adapter-luxon.umd.min.js"></script>
     <style>
         :root {
             --bg-primary: #0f172a;
@@ -638,11 +639,45 @@
         .settings-details summary:hover { color: var(--accent-blue); }
         .settings-details[open] summary { border-bottom: 1px solid var(--border-color); }
         .settings-details .detail-body { padding: 14px 0 8px; }
+
+        /* Utility classes — inline style="" attributes are forbidden by the CSP */
+        .is-hidden { display: none; }
+        .icon-sprite { display: none; }
+        .text-blue { color: var(--accent-blue); }
+        .text-green { color: var(--accent-green); }
+        .text-red { color: var(--accent-red); }
+        .text-muted { color: var(--text-muted); }
+        .muted-sm { color: var(--text-muted); font-size: 0.8rem; }
+        .back-btn { margin-bottom: 20px; }
+        .setting-row-start { align-items: flex-start; }
+        .setting-label-flex { flex: 1; margin-right: 20px; }
+        .telegram-chat-input {
+            width: 220px;
+            max-width: 100%;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+        .description-flat { margin-bottom: 0; }
+        .description-no-top { margin-top: 0; }
+        .code-inline { background: var(--bg-primary); padding: 2px 6px; border-radius: 4px; }
+        .backup-list-wrap { margin-top: 20px; }
+        .settings-actions-top { margin-top: 4px; }
+        .candidates-section { margin-bottom: 30px; }
+        .collapsed-group { display: none; }
+        .form-hint { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px; }
+        .checkbox-label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+        .checkbox-label input { margin-top: 3px; }
+        .hint-text { font-size: 0.8rem; color: var(--text-muted); display: block; }
+        .toast-spacer { flex: 1; }
     </style>
 </head>
 <body data-view="list">
     <!-- Inline SVG icon sprite (stroke icons, currentColor) -->
-    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+    <svg xmlns="http://www.w3.org/2000/svg" class="icon-sprite" aria-hidden="true">
         <symbol id="i-chart" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></symbol>
         <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
         <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
@@ -668,15 +703,15 @@
     <div class="auth-overlay" id="authOverlay">
         <div class="auth-box">
             <div class="auth-logo">
-                <span class="auth-logo-icon"><svg class="icon icon-xl" style="color: var(--accent-blue);" aria-hidden="true"><use href="#i-chart"/></svg></span>
+                <span class="auth-logo-icon"><svg class="icon icon-xl text-blue" aria-hidden="true"><use href="#i-chart"/></svg></span>
                 <h1>Price <span>Monitor</span></h1>
                 <p class="auth-subtitle">Authentication Required</p>
             </div>
 
             <!-- Tab Switcher -->
             <div class="auth-tabs">
-                <button class="auth-tab active" id="loginTab" onclick="switchAuthTab('login')">Sign In</button>
-                <button class="auth-tab" id="registerTab" onclick="switchAuthTab('register')">Sign Up</button>
+                <button class="auth-tab active" id="loginTab">Sign In</button>
+                <button class="auth-tab" id="registerTab">Sign Up</button>
             </div>
 
             <!-- Message Display -->
@@ -684,14 +719,14 @@
 
             <!-- Login Form -->
             <div class="auth-form-container">
-                <form id="loginForm" class="auth-form" onsubmit="return false;">
+                <form id="loginForm" class="auth-form">
                     <input type="text" id="loginUsername" placeholder="Username" autocomplete="username" required>
                     <input type="password" id="loginPassword" placeholder="Password" autocomplete="current-password" required>
                     <button type="submit" class="btn btn-primary">Sign In</button>
                 </form>
 
                 <!-- Register Form -->
-                <form id="registerForm" class="auth-form hidden" onsubmit="return false;">
+                <form id="registerForm" class="auth-form hidden">
                     <input type="text" id="registerUsername" placeholder="Choose a username" autocomplete="username" required>
                     <div class="password-hint">Letters, numbers, and underscores only (min 3 characters)</div>
                     <input type="password" id="registerPassword" placeholder="Choose a password" autocomplete="new-password" required>
@@ -709,13 +744,13 @@
 
         <!-- Header -->
         <header>
-            <h1><svg class="icon icon-lg" style="color: var(--accent-blue);" aria-hidden="true"><use href="#i-chart"/></svg> Price <span>Monitor</span></h1>
+            <h1><svg class="icon icon-lg text-blue" aria-hidden="true"><use href="#i-chart"/></svg> Price <span>Monitor</span></h1>
             <div class="header-actions">
                 <span id="healthStatus"><span class="health-dot health-ok"></span>Online</span>
-                <button class="btn btn-secondary btn-sm btn-settings" onclick="showSettingsView()"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg> <span class="btn-text">Settings</span></button>
-                <button class="btn btn-secondary btn-sm" id="checkAllBtn" onclick="checkAllPrices()"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check All Prices</span></button>
-                <button class="btn btn-primary btn-add" onclick="openAddModal()"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> <span class="btn-text">Add Product</span></button>
-                <button class="btn btn-danger btn-sm" id="signOutBtn" onclick="handleSignOut()" style="display:none;"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg> <span class="btn-text">Sign Out</span></button>
+                <button class="btn btn-secondary btn-sm btn-settings" id="settingsBtn"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg> <span class="btn-text">Settings</span></button>
+                <button class="btn btn-secondary btn-sm" id="checkAllBtn"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check All Prices</span></button>
+                <button class="btn btn-primary btn-add" id="addProductBtn"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg> <span class="btn-text">Add Product</span></button>
+                <button class="btn btn-danger btn-sm is-hidden" id="signOutBtn"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg> <span class="btn-text">Sign Out</span></button>
             </div>
         </header>
 
@@ -752,9 +787,9 @@
                     <div class="list-toolbar">
                         <div class="search-box">
                             <svg class="icon icon-sm" aria-hidden="true"><use href="#i-search"/></svg>
-                            <input type="search" id="productSearch" placeholder="Search by name or store..." oninput="onListQuery(this.value)" aria-label="Search products">
+                            <input type="search" id="productSearch" placeholder="Search by name or store..." aria-label="Search products">
                         </div>
-                        <select class="sort-select" id="productSort" onchange="onListSort(this.value)" aria-label="Sort products">
+                        <select class="sort-select" id="productSort" aria-label="Sort products">
                             <option value="smart" selected>Active first</option>
                             <option value="name">Name A-Z</option>
                             <option value="price-desc">Price: high to low</option>
@@ -773,7 +808,7 @@
 
         <!-- Settings View -->
         <div class="settings-view" id="settingsView">
-            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
+            <button class="btn btn-secondary back-btn" id="backSettingsBtn"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
 
             <div class="settings-card">
                 <h2><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg> Telegram Notifications</h2>
@@ -795,25 +830,23 @@
                         <p>Receive price alerts via Telegram when products drop in price</p>
                     </div>
                     <label class="toggle">
-                        <input type="checkbox" id="telegramEnabledToggle" onchange="saveTelegramSettings()">
+                        <input type="checkbox" id="telegramEnabledToggle">
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
 
                 <!-- Chat ID Input -->
-                <div class="setting-row" style="align-items: flex-start;">
-                    <div class="setting-label" style="flex: 1; margin-right: 20px;">
+                <div class="setting-row setting-row-start">
+                    <div class="setting-label setting-label-flex">
                         <h3>Telegram Chat ID</h3>
                         <p>Your unique Telegram chat ID. Find it by messaging @userinfobot on Telegram.</p>
                     </div>
-                    <input type="text" id="telegramChatIdInput" placeholder="e.g., 123456789"
-                            style="width: 220px; max-width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-size: 0.95rem;"
-                           oninput="saveTelegramSettings()">
+                    <input type="text" id="telegramChatIdInput" placeholder="e.g., 123456789" class="telegram-chat-input">
                 </div>
 
                 <!-- Actions -->
                 <div class="settings-actions">
-                    <button class="btn btn-success" onclick="testTelegramNotification()" id="testTelegramBtn">
+                    <button class="btn btn-success" id="testTelegramBtn">
                         <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg> <span class="btn-text">Send Test Notification</span>
                     </button>
                 </div>
@@ -823,10 +856,10 @@
                 <details class="settings-details">
                     <summary><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg> How to get your Chat ID (5 steps)</summary>
                     <div class="detail-body">
-                        <p class="description" style="margin-bottom: 0;">
+                        <p class="description description-flat">
                             1. Open Telegram and search for <strong>@userinfobot</strong><br>
                             2. Send any message to the bot (e.g., "/start")<br>
-                            3. The bot will reply with your Chat ID - it's a number like <code style="background: var(--bg-primary); padding: 2px 6px; border-radius: 4px;">123456789</code><br>
+                            3. The bot will reply with your Chat ID - it's a number like <code class="code-inline">123456789</code><br>
                             4. Paste that number into the "Telegram Chat ID" field above<br>
                             5. Enable notifications and click "Send Test Notification" to verify it works
                         </p>
@@ -866,20 +899,20 @@
 
                 <!-- Actions -->
                 <div class="settings-actions">
-                    <button class="btn btn-success" onclick="backupNow()" id="backupNowBtn">
+                    <button class="btn btn-success" id="backupNowBtn">
                         <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg> <span class="btn-text">Backup Now</span>
                     </button>
-                    <button class="btn btn-secondary" onclick="loadBackupList()" id="backupListBtn">
+                    <button class="btn btn-secondary" id="backupListBtn">
                         <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Refresh Backup List</span>
                     </button>
                 </div>
 
                 <!-- Backup list -->
-                <div id="backupListContainer" style="margin-top: 20px;"></div>
+                <div id="backupListContainer" class="backup-list-wrap"></div>
             </div>
 
-            <div class="settings-actions" style="margin-top: 4px;">
-                <button class="btn btn-danger" id="settingsSignOutBtn" onclick="handleSignOut()" style="display:none;">
+            <div class="settings-actions settings-actions-top">
+                <button class="btn btn-danger is-hidden" id="settingsSignOutBtn">
                     <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg> <span class="btn-text">Sign Out</span>
                 </button>
             </div>
@@ -887,7 +920,7 @@
 
         <!-- Detail View -->
         <div class="detail-view" id="detailView">
-            <button class="btn btn-secondary" onclick="goBackToList()" style="margin-bottom: 20px;"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
+            <button class="btn btn-secondary back-btn" id="backDetailBtn"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg> <span class="btn-text">Back to Products</span></button>
 
             <div class="detail-header">
                 <div class="detail-info">
@@ -895,10 +928,10 @@
                     <div id="detailLinks"></div>
                 </div>
                 <div class="detail-actions">
-                    <button class="btn btn-success btn-sm" id="checkNowBtn" onclick="checkCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check Now</span></button>
-                    <button class="btn btn-secondary btn-sm" onclick="editCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> <span class="btn-text">Edit</span></button>
-                    <button class="btn btn-secondary btn-sm" id="findAlternatesBtn" title="Search the web for the same product on other stores in the same country" onclick="findCurrentAlternates()"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> <span class="btn-text">Find Links</span></button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteCurrentProduct()"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> <span class="btn-text">Delete</span></button>
+                    <button class="btn btn-success btn-sm" id="checkNowBtn"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg> <span class="btn-text">Check Now</span></button>
+                    <button class="btn btn-secondary btn-sm" id="editDetailBtn"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg> <span class="btn-text">Edit</span></button>
+                    <button class="btn btn-secondary btn-sm" id="findAlternatesBtn" title="Search the web for the same product on other stores in the same country"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg> <span class="btn-text">Find Links</span></button>
+                    <button class="btn btn-danger btn-sm" id="deleteDetailBtn"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> <span class="btn-text">Delete</span></button>
                 </div>
             </div>
 
@@ -906,7 +939,7 @@
             <div class="stats-row" id="detailStats"></div>
 
             <!-- Candidate Links (proposed by discovery, awaiting review) -->
-            <div class="products-section" id="candidatesSection" style="display:none; margin-bottom: 30px;">
+            <div class="products-section candidates-section is-hidden" id="candidatesSection">
                 <div class="section-header">
                     <h2><svg class="icon" aria-hidden="true"><use href="#i-link"/></svg> New Links Found</h2>
                 </div>
@@ -940,11 +973,11 @@
     <!-- Mobile bottom navigation -->
     <nav class="bottom-nav" id="bottomNav" aria-label="Main navigation">
         <div class="bottom-nav-inner">
-            <button id="navListBtn" class="active" onclick="navToList()">
+            <button id="navListBtn" class="active">
                 <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>
                 <span>Products</span>
             </button>
-            <button id="navSettingsBtn" onclick="navToSettings()">
+            <button id="navSettingsBtn">
                 <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
                 <span>Settings</span>
             </button>
@@ -952,7 +985,7 @@
     </nav>
 
     <!-- Mobile floating add button -->
-    <button class="fab" id="fabAdd" onclick="openAddModal()" aria-label="Add product" title="Add product">
+    <button class="fab" id="fabAdd" aria-label="Add product" title="Add product">
         <svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>
     </button>
 
@@ -960,7 +993,7 @@
     <div class="modal-overlay" id="addModal">
         <div class="modal">
             <h2>Add New Product</h2>
-            <form onsubmit="addProduct(event)">
+            <form id="addProductForm">
                 <div class="form-group">
                     <label>Product Name *</label>
                     <input type="text" id="productName" required placeholder="e.g., iPhone 15 Pro">
@@ -980,36 +1013,36 @@
                 </div>
                 <div class="form-group">
                     <label>Scraper Type</label>
-                    <select id="scraperType" onchange="toggleCustomSelector()">
+                    <select id="scraperType">
                         <option value="auto" selected>Auto-detect</option>
                         <option value="custom">Custom CSS Selector</option>
                     </select>
                 </div>
-                <div class="form-group" id="customSelectorGroup" style="display: none;">
+                <div class="form-group collapsed-group" id="customSelectorGroup">
                     <label>CSS Selector for Price</label>
                     <input type="text" id="customSelector" placeholder='e.g., .price or [itemprop="price"]'>
                 </div>
                 <div class="form-group">
                     <label>Alternative Price Sources (optional)</label>
-                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+                    <p class="form-hint">
                         Extra product pages for the same item. Each is checked alongside the main URL and shown on the graph in its own color, labeled by domain.
                     </p>
                     <div id="addAltUrlsList"></div>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="addAddAltUrlRow()">+ Add Alternative Link</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="addAltUrlBtn">+ Add Alternative Link</button>
                 </div>
                 <div class="form-group">
-                    <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="autoAlternates" checked style="margin-top: 3px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="autoAlternates" checked>
                         <span>
                             Auto find alternate links
-                            <span style="font-size: 0.8rem; color: var(--text-muted); display: block;">
+                            <span class="hint-text">
                                 Scheduled web search for the same product (matched by EAN/GTIN/ASIN on other sites with the same country domain, e.g. .ro). Up to 3 links, lowest price first.
                             </span>
                         </span>
                     </label>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeAddModal()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" id="cancelAddBtn">Cancel</button>
                     <button type="submit" class="btn btn-primary">Add Product</button>
                 </div>
             </form>
@@ -1020,7 +1053,7 @@
     <div class="modal-overlay" id="editModal">
         <div class="modal">
             <h2>Edit Product</h2>
-            <form onsubmit="saveProduct(event)">
+            <form id="editProductForm">
                 <input type="hidden" id="editProductId">
                 <div class="form-group">
                     <label>Product Name *</label>
@@ -1041,36 +1074,36 @@
                 </div>
                 <div class="form-group">
                     <label>Scraper Type</label>
-                    <select id="editScraperType" onchange="toggleEditCustomSelector()">
+                    <select id="editScraperType">
                         <option value="auto">Auto-detect</option>
                         <option value="custom">Custom CSS Selector</option>
                     </select>
                 </div>
-                <div class="form-group" id="editCustomSelectorGroup" style="display: none;">
+                <div class="form-group collapsed-group" id="editCustomSelectorGroup">
                     <label>CSS Selector for Price</label>
                     <input type="text" id="editCustomSelector" maxlength="255" placeholder='e.g., .price or [itemprop="price"]'>
                 </div>
                 <div class="form-group">
                     <label>Alternative Price Sources (optional)</label>
-                    <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+                    <p class="form-hint">
                         Extra product pages for the same item. Each is checked alongside the main URL and shown on the graph in its own color, labeled by domain.
                     </p>
                     <div id="editAltUrlsList"></div>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="addEditAltUrlRow()">+ Add Alternative Link</button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="editAltUrlBtn">+ Add Alternative Link</button>
                 </div>
                 <div class="form-group">
-                    <label style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="editAutoAlternates" checked style="margin-top: 3px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="editAutoAlternates" checked>
                         <span>
                             Auto find alternate links
-                            <span style="font-size: 0.8rem; color: var(--text-muted); display: block;">
+                            <span class="hint-text">
                                 Scheduled web search for the same product (matched by EAN/GTIN/ASIN on other sites with the same country domain, e.g. .ro). Up to 3 links, lowest price first.
                             </span>
                         </span>
                     </label>
                 </div>
                 <div class="modal-actions">
-                    <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" id="cancelEditBtn">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
                 </div>
             </form>
@@ -1300,6 +1333,93 @@
             document.getElementById('loginForm').addEventListener('submit', handleLogin);
             document.getElementById('registerForm').addEventListener('submit', handleRegister);
 
+            // ─── Static event bindings (inline handlers are forbidden by the CSP) ──
+            // Bound once per page load here, NOT in initApp(): initApp re-runs on
+            // re-login and would attach duplicate listeners. window.* app functions
+            // are resolved at event time, after initApp has defined them.
+            function bindStaticEvents() {
+                const byId = id => document.getElementById(id);
+                const on = (id, event, fn) => { const el = byId(id); if (el) el.addEventListener(event, fn); };
+
+                on('loginTab', 'click', () => window.switchAuthTab('login'));
+                on('registerTab', 'click', () => window.switchAuthTab('register'));
+
+                on('settingsBtn', 'click', () => window.showSettingsView());
+                on('checkAllBtn', 'click', () => window.checkAllPrices());
+                on('addProductBtn', 'click', () => window.openAddModal());
+                on('signOutBtn', 'click', () => window.handleSignOut());
+
+                on('productSearch', 'input', e => window.onListQuery(e.target.value));
+                on('productSort', 'change', e => window.onListSort(e.target.value));
+
+                on('backSettingsBtn', 'click', () => window.goBackToList());
+                on('backDetailBtn', 'click', () => window.goBackToList());
+
+                on('telegramEnabledToggle', 'change', () => window.saveTelegramSettings());
+                on('telegramChatIdInput', 'input', () => window.saveTelegramSettings());
+                on('testTelegramBtn', 'click', () => window.testTelegramNotification());
+
+                on('backupNowBtn', 'click', () => window.backupNow());
+                on('backupListBtn', 'click', () => window.loadBackupList());
+                on('settingsSignOutBtn', 'click', () => window.handleSignOut());
+
+                on('checkNowBtn', 'click', () => window.checkCurrentProduct());
+                on('editDetailBtn', 'click', () => window.editCurrentProduct());
+                on('findAlternatesBtn', 'click', () => window.findCurrentAlternates());
+                on('deleteDetailBtn', 'click', () => window.deleteCurrentProduct());
+
+                on('navListBtn', 'click', () => window.navToList());
+                on('navSettingsBtn', 'click', () => window.navToSettings());
+                on('fabAdd', 'click', () => window.openAddModal());
+
+                on('addProductForm', 'submit', e => { e.preventDefault(); window.addProduct(e); });
+                on('scraperType', 'change', () => window.toggleCustomSelector());
+                on('addAltUrlBtn', 'click', () => window.addAddAltUrlRow());
+                on('cancelAddBtn', 'click', () => window.closeAddModal());
+
+                on('editProductForm', 'submit', e => { e.preventDefault(); window.saveProduct(e); });
+                on('editScraperType', 'change', () => window.toggleEditCustomSelector());
+                on('editAltUrlBtn', 'click', () => window.addEditAltUrlRow());
+                on('cancelEditBtn', 'click', () => window.closeEditModal());
+
+                // Product table: rows and action buttons are re-rendered into the
+                // container, so the container-level delegation survives innerHTML.
+                const tableContainer = byId('productsTableContainer');
+                if (tableContainer) {
+                    tableContainer.addEventListener('click', function(e) {
+                        const actionEl = e.target.closest('[data-action]');
+                        if (actionEl) {
+                            const id = parseInt(actionEl.dataset.id, 10);
+                            const action = actionEl.dataset.action;
+                            if (action === 'check') window.checkProduct(id);
+                            else if (action === 'edit') window.openEditModal(id);
+                            else if (action === 'delete') window.deleteProduct(id);
+                            return;
+                        }
+                        if (e.target.closest('a') || e.target.closest('.actions-cell')) return;
+                        const row = e.target.closest('tr.clickable-row');
+                        if (row) window.showProductDetail(parseInt(row.dataset.id, 10));
+                    });
+                    tableContainer.addEventListener('change', function(e) {
+                        const toggle = e.target.closest('[data-action="toggle"]');
+                        if (toggle) window.toggleProduct(parseInt(toggle.dataset.id, 10), toggle.checked);
+                    });
+                }
+
+                // Candidate cards: approve/dismiss buttons
+                const candidatesList = byId('candidatesList');
+                if (candidatesList) {
+                    candidatesList.addEventListener('click', function(e) {
+                        const btn = e.target.closest('[data-action]');
+                        if (!btn) return;
+                        const id = parseInt(btn.dataset.id, 10);
+                        if (btn.dataset.action === 'approve') window.approveCandidate(id);
+                        else if (btn.dataset.action === 'dismiss') window.dismissCandidate(id);
+                    });
+                }
+            }
+            bindStaticEvents();
+
             // ─── API Helper with Auth ────────────────────────────────────────
             window.api = async function(method, path, body) {
                 const opts = { method, headers: { 'Content-Type': 'application/json' } };
@@ -1355,7 +1475,7 @@
                 const toast = document.createElement('div');
                 toast.className = 'toast toast-' + type;
                 toast.setAttribute('role', 'status');
-                toast.innerHTML = icon(TOAST_ICONS[type] || 'info') + '<span style="flex:1"></span>';
+                toast.innerHTML = icon(TOAST_ICONS[type] || 'info') + '<span class="toast-spacer"></span>';
                 toast.lastChild.textContent = message;
                 toast.onclick = () => toast.remove();
                 container.appendChild(toast);
@@ -1425,11 +1545,11 @@
                     if (p.current_price) pricesHtml += '<div class="price-line"><span class="price-label">Current:</span> <span class="price-badge price-current">' + formatPrice(p.current_price, p.currency) + '</span></div>';
                     if (p.min_price) pricesHtml += '<div class="price-line"><span class="price-label">Min:</span> <span class="price-badge price-min">' + formatPrice(p.min_price, p.currency) + '</span></div>';
                     if (p.candidate_count > 0) pricesHtml += '<div class="price-line"><span class="new-link-badge" title="' + p.candidate_count + ' candidate link(s) awaiting review">' + icon('link', 'icon-sm') + ' ' + p.candidate_count + '</span></div>';
-                    if (!pricesHtml) pricesHtml = '<span style="color:var(--text-muted)">No data</span>';
-                    html += '<tr class="clickable-row" onclick="showProductDetail(' + p.id + ')">';
-                    html += '<td data-label="Product"><div class="product-cell"><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url"><a class="link-source" href="' + escapeHtml(p.url) + '" target="_blank" title="' + escapeHtml(p.url) + '" onclick="event.stopPropagation()">' + escapeHtml(extractMainDomain(p.url)) + '</a></div><div class="product-prices">' + pricesHtml + '</div></div></td>';
+                    if (!pricesHtml) pricesHtml = '<span class="text-muted">No data</span>';
+                    html += '<tr class="clickable-row" data-id="' + p.id + '">';
+                    html += '<td data-label="Product"><div class="product-cell"><div class="product-name">' + escapeHtml(p.name) + '</div><div class="product-url"><a class="link-source" href="' + escapeHtml(p.url) + '" target="_blank" title="' + escapeHtml(p.url) + '">' + escapeHtml(extractMainDomain(p.url)) + '</a></div><div class="product-prices">' + pricesHtml + '</div></div></td>';
                     html += '<td data-label="Status"><span class="status-badge ' + (p.enabled ? 'status-active' : 'status-inactive') + '">' + (p.enabled ? 'Active' : 'Paused') + '</span></td>';
-                    html += '<td data-label="Actions" class="actions-cell" onclick="event.stopPropagation()"><span class="actions-group"><button class="btn btn-success btn-sm" title="Check price now" onclick="checkProduct(' + p.id + ')">' + icon('refresh') + '</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' onchange="toggleProduct(' + p.id + ', this.checked)"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" onclick="openEditModal(' + p.id + ')">' + icon('edit') + '</button><button class="btn btn-danger btn-sm" title="Delete product" onclick="deleteProduct(' + p.id + ')">' + icon('trash') + '</button></span></td>';
+                    html += '<td data-label="Actions" class="actions-cell"><span class="actions-group"><button class="btn btn-success btn-sm" title="Check price now" data-action="check" data-id="' + p.id + '">' + icon('refresh') + '</button><label class="toggle" title="' + (p.enabled ? 'Disable' : 'Enable') + '"><input type="checkbox" ' + (p.enabled ? 'checked' : '') + ' data-action="toggle" data-id="' + p.id + '"><span class="toggle-slider"></span></label><button class="btn btn-secondary btn-sm" title="Edit product" data-action="edit" data-id="' + p.id + '">' + icon('edit') + '</button><button class="btn btn-danger btn-sm" title="Delete product" data-action="delete" data-id="' + p.id + '">' + icon('trash') + '</button></span></td>';
                     html += '</tr>';
                 });
                 html += '</tbody></table></div>';
@@ -1677,9 +1797,9 @@
 
             function renderDetailStats(p) {
                 document.getElementById('detailStats').innerHTML =
-                    '<div class="stat-item"><div class="stat-label">Current Price</div><div class="stat-value" style="color:var(--accent-blue)">' + (p.current_price ? formatPrice(p.current_price, p.currency) : 'N/A') + '</div></div>' +
-                    '<div class="stat-item"><div class="stat-label">Min Price</div><div class="stat-value" style="color:var(--accent-green)">' + (p.min_price ? formatPrice(p.min_price, p.currency) : 'N/A') + '</div></div>' +
-                    '<div class="stat-item"><div class="stat-label">Max Price</div><div class="stat-value" style="color:var(--accent-red)">' + (p.max_price ? formatPrice(p.max_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Current Price</div><div class="stat-value text-blue">' + (p.current_price ? formatPrice(p.current_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Min Price</div><div class="stat-value text-green">' + (p.min_price ? formatPrice(p.min_price, p.currency) : 'N/A') + '</div></div>' +
+                    '<div class="stat-item"><div class="stat-label">Max Price</div><div class="stat-value text-red">' + (p.max_price ? formatPrice(p.max_price, p.currency) : 'N/A') + '</div></div>' +
                     '<div class="stat-item"><div class="stat-label">Avg Price</div><div class="stat-value">' + (p.avg_price ? formatPrice(p.avg_price, p.currency) : 'N/A') + '</div></div>' +
                     '<div class="stat-item"><div class="stat-label">Total Checks</div><div class="stat-value">' + (p.price_count || 0) + '</div></div>';
             }
@@ -1698,11 +1818,11 @@
                 }
                 if (currentProductId !== productId) return; // view changed meanwhile
                 if (!candidates || candidates.length === 0) {
-                    section.style.display = 'none';
+                    section.classList.add('is-hidden');
                     list.innerHTML = '';
                     return;
                 }
-                section.style.display = '';
+                section.classList.remove('is-hidden');
                 list.innerHTML = '';
                 const product = products.find(p => p.id === productId);
                 const cur = product ? product.currency : 'RON';
@@ -1722,13 +1842,13 @@
                     if (c.price != null) {
                         priceEl.innerHTML = '<span class="price-badge price-min">' + formatPrice(c.price, cur) + '</span>';
                     } else {
-                        priceEl.innerHTML = '<span style="color:var(--text-muted); font-size:0.8rem;">no price found</span>';
+                        priceEl.innerHTML = '<span class="muted-sm">no price found</span>';
                     }
                     const actions = document.createElement('div');
                     actions.className = 'candidate-actions';
                     actions.innerHTML =
-                        '<button class="btn btn-success btn-sm" title="Add this link and track its price on every check" onclick="approveCandidate(' + c.id + ')">✓ Add Link</button>' +
-                        '<button class="btn btn-danger btn-sm" title="Not the same product? Dismiss it" onclick="dismissCandidate(' + c.id + ')">✖ Dismiss</button>';
+                        '<button class="btn btn-success btn-sm" title="Add this link and track its price on every check" data-action="approve" data-id="' + c.id + '">✓ Add Link</button>' +
+                        '<button class="btn btn-danger btn-sm" title="Not the same product? Dismiss it" data-action="dismiss" data-id="' + c.id + '">✖ Dismiss</button>';
                     card.appendChild(info);
                     card.appendChild(priceEl);
                     card.appendChild(actions);
@@ -2028,7 +2148,7 @@
                         return String(b.created || '').localeCompare(String(a.created || ''));
                     });
                     if (items.length === 0) {
-                        container.innerHTML = '<p class="description" style="margin-top: 0;">No backups yet - click "Backup Now" to create the first one.</p>';
+                        container.innerHTML = '<p class="description description-no-top">No backups yet - click "Backup Now" to create the first one.</p>';
                         return;
                     }
                     var shown = items.slice(0, 20);
@@ -2047,7 +2167,7 @@
                     }
                     container.innerHTML = html;
                 } catch (err) {
-                    container.innerHTML = '<p class="description" style="margin-top: 0;">Could not load backup list: ' + escapeHtml(extractApiError(err)) + '</p>';
+                    container.innerHTML = '<p class="description description-no-top">Could not load backup list: ' + escapeHtml(extractApiError(err)) + '</p>';
                 }
             };
 
@@ -2161,14 +2281,20 @@ async function loadPriceHistory(id) {
                 window.showListView();
             };
 
-            // Chart range picker: re-render from cache, no refetch
-            document.getElementById('rangePicker').addEventListener('click', function(e) {
-                const btn = e.target.closest('button');
-                if (!btn) return;
-                chartRange = parseInt(btn.dataset.range, 10) || 0;
-                document.querySelectorAll('#rangePicker button').forEach(b => b.classList.toggle('active', b === btn));
-                if (historyCache) renderChart(historyCache.entries);
-            });
+            // Chart range picker: re-render from cache, no refetch.
+            // Guarded so a re-login (initApp re-run) replaces the listener instead of stacking.
+            const rangePicker = document.getElementById('rangePicker');
+            if (rangePicker) {
+                if (rangePicker.__rangeClick) rangePicker.removeEventListener('click', rangePicker.__rangeClick);
+                rangePicker.__rangeClick = function(e) {
+                    const btn = e.target.closest('button');
+                    if (!btn) return;
+                    chartRange = parseInt(btn.dataset.range, 10) || 0;
+                    document.querySelectorAll('#rangePicker button').forEach(b => b.classList.toggle('active', b === btn));
+                    if (historyCache) renderChart(historyCache.entries);
+                };
+                rangePicker.addEventListener('click', rangePicker.__rangeClick);
+            }
 
             window.checkAllPrices = async function() {
                 showToast('Checking all products...', 'info');

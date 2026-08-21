@@ -2,8 +2,11 @@
 FastAPI application with all API endpoints.
 """
 
+import base64
 import json
 import logging
+import re
+import secrets
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -65,13 +68,14 @@ app = FastAPI(
 # Security headers must be outermost so they are present on every response,
 # including the 401s AuthMiddleware returns without reaching the app.
 
-# 'unsafe-inline' for script/style is required because the single-file SPA
-# uses inline event handlers and style attributes; the external
-# cdn.jsdelivr.net scripts are SRI-locked in index.html.
-CONTENT_SECURITY_POLICY = (
+# No 'unsafe-inline': the SPA's inline <style>/<script> tags are allowed via a
+# per-request nonce that serve_frontend injects into index.html (and stores on
+# request.state.csp_nonce). The chart libraries are self-hosted under
+# /static/vendor/, so no external script host is allowed.
+CSP_HTML_TEMPLATE = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-    "style-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'nonce-{nonce}'; "
+    "style-src 'self' 'nonce-{nonce}'; "
     "img-src 'self' data: blob:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
@@ -80,6 +84,8 @@ CONTENT_SECURITY_POLICY = (
     "form-action 'self'; "
     "frame-ancestors 'none'"
 )
+# Same policy for non-HTML responses (API JSON, static assets) — no nonce.
+CSP_DEFAULT = re.sub(r"\s*'nonce-\{nonce\}'", "", CSP_HTML_TEMPLATE)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -87,8 +93,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
         response = await call_next(request)
-        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        nonce = getattr(request.state, "csp_nonce", None)
+        response.headers["Content-Security-Policy"] = (
+            CSP_HTML_TEMPLATE.format(nonce=nonce) if nonce else CSP_DEFAULT
+        )
         response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
 
@@ -1288,16 +1298,24 @@ def list_backups_endpoint(request: Request):
 # ============ Frontend ============
 
 @app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
+async def serve_frontend(request: Request):
     """Serve the main frontend page."""
     try:
         with open("static/index.html", "r") as f:
-            return f.read()
+            html = f.read()
     except FileNotFoundError:
         return HTMLResponse(
             content="<h1>Price Monitor</h1><p>Frontend not found. Please build the static files.</p>",
             status_code=503,
         )
+    # Per-request CSP nonce: injected into the one inline <style> and the one
+    # bare <script> tag so the policy can forbid 'unsafe-inline' (the
+    # SecurityHeadersMiddleware reads the nonce from request.state).
+    nonce = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+    request.state.csp_nonce = nonce
+    html = html.replace("<style>", f'<style nonce="{nonce}">', 1)
+    html = html.replace("<script>", f'<script nonce="{nonce}">', 1)
+    return html
 
 
 # Mount static files if directory exists

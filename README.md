@@ -116,7 +116,7 @@ The application uses **token-based authentication**:
 
 ## 🔒 Security
 
-- All responses carry a `Content-Security-Policy` header (same-origin by default; the three pinned CDN libraries are the only allowed external script source and are integrity-checked via SRI in `index.html`) and `X-Frame-Options: DENY` + `frame-ancestors 'none'` (anti-clickjacking).
+- All responses carry a `Content-Security-Policy` header (same-origin only, no `unsafe-inline` — the page's inline `<style>`/`<script>` tags are allowed through a per-request `nonce` that the server injects into `index.html`) and `X-Frame-Options: DENY` + `frame-ancestors 'none'` (anti-clickjacking) + `X-Content-Type-Options: nosniff`. The chart libraries (chart.js, luxon, adapter) are self-hosted under `backend/static/vendor/`, so no external script host is needed.
 - The API has no open CORS by default — set `PM_CORS_ORIGINS` only if you need to call it from another origin.
 
 ## 📱 Telegram Setup
