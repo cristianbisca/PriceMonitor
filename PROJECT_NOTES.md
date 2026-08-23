@@ -84,7 +84,7 @@ AppSettings (id, key, value)                          # DEAD CODE — defined, n
 
 ## 5. Authentication
 
-- **Tokens:** base64-encoded JSON `{user_id, username, ts}`. TTL = 7 days (`TOKEN_TTL_SECONDS = 604800`).
+- **Tokens:** `base64url(JSON {user_id, username, ts})` + `.` + **HMAC-SHA256 hex signature** — unsigned or modified tokens are rejected (signature checked before anything else, via `hmac.compare_digest`). Signing secret resolution (`_get_token_secret()` in `auth.py`): `PM_TOKEN_SECRET` env var → otherwise a random 256-bit secret auto-generated on first use and persisted at `<db_dir>/.pm_token_secret` (survives restarts via the data volume; `chmod 600` best-effort) → otherwise a per-process random secret (tokens die on restart; logged). Consequence: changing the secret (or losing the data volume without `PM_TOKEN_SECRET`) invalidates every existing token — users log in again. TTL = 7 days (`TOKEN_TTL_SECONDS = 604800`).
 - **Password hashing:** SHA-256 hex digest (no salt — see §10).
 - **Transport:** `X-PM-Token` header (primary) or `Authorization: Bearer <token>`.
 - **Middleware:** `AuthMiddleware` (Starlette `BaseHTTPMiddleware`) protects all `/api/*` except:
@@ -224,6 +224,7 @@ Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle
 | `PORT` | `3000` | HTTP server port (in-container) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new registrations |
+| `PM_TOKEN_SECRET` | *(auto-generated, persisted at `<db_dir>/.pm_token_secret`)* | HMAC-SHA256 signing secret for auth tokens (§5) |
 | `PM_CORS_ORIGINS` | *(empty = disabled)* | Comma-separated CORS origins (empty = no CORS headers; SPA is same-origin) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `BACKUP_ENABLED` | `true` | Enable/disable database backups (manual + scheduled) |

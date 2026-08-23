@@ -91,6 +91,7 @@ python main.py
 | `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
+| `PM_TOKEN_SECRET` | *(auto-generated)* | HMAC-SHA256 signing secret for auth tokens — leave empty to auto-generate and persist it next to the database file |
 | `PM_CORS_ORIGINS` | *(empty = disabled)* | Comma-separated CORS origins for cross-origin API calls (the SPA is same-origin, so empty is the default) |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `TELEGRAM_CHAT_ID` | *(empty)* | Global fallback chat ID(s), comma-separated — used only when a user hasn't set their own via the web UI |
@@ -109,8 +110,8 @@ python main.py
 
 The application uses **token-based authentication**:
 
-- Tokens are base64-encoded JSON payloads containing `user_id`, `username`, and a timestamp
-- Token validity: **7 days** (tokens are persisted in browser localStorage)
+- Tokens are **signed** (HMAC-SHA256) base64 JSON payloads containing `user_id`, `username`, and a timestamp — they cannot be forged or tampered with without the signing secret (`PM_TOKEN_SECRET`, or an auto-generated secret persisted next to the database file)
+- Token validity: **7 days** (tokens are persisted in browser localStorage; changing the signing secret invalidates all sessions)
 - Tokens are passed via `X-PM-Token` header or `Authorization: Bearer <token>` header
 - Sign-up can be disabled by setting `ENABLE_SIGNUP=false`
 
