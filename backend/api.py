@@ -352,6 +352,17 @@ async def startup():
                     conn.execute(text("ALTER TABLE price_history ADD COLUMN check_cycle DATETIME"))
                     logger.info("Added column check_cycle to price_history table")
 
+        # Auto-migrate: add cross-currency columns to link_candidates table if missing
+        if "link_candidates" in inspector.get_table_names():
+            candidate_cols = {col["name"] for col in inspector.get_columns("link_candidates")}
+            with engine.begin() as conn:
+                if "original_price" not in candidate_cols:
+                    conn.execute(text("ALTER TABLE link_candidates ADD COLUMN original_price FLOAT"))
+                    logger.info("Added column original_price to link_candidates table")
+                if "price_currency" not in candidate_cols:
+                    conn.execute(text("ALTER TABLE link_candidates ADD COLUMN price_currency VARCHAR(10)"))
+                    logger.info("Added column price_currency to link_candidates table")
+
     if restore_result:
         # Schema init after a restore: roll back to the pre-restore safety copy
         # (and retry) if the restored file turns out to be unusable
@@ -900,7 +911,9 @@ def find_alternates_now(product_id: int, request: Request, db: Session = Depends
 class LinkCandidateResponse(BaseModel):
     id: int
     url: str
-    price: Optional[float]
+    price: Optional[float]  # in the product's currency (converted when needed)
+    original_price: Optional[float] = None  # as shown on the candidate page
+    price_currency: Optional[str] = None  # currency shown on the candidate page (e.g. "EUR")
     match_method: Optional[str]  # "code" / "model" / "name" / "keyword"
     status: str
     savings: Optional[float] = None  # current_price - candidate.price

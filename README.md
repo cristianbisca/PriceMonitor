@@ -9,6 +9,7 @@ A web application that monitors price changes for products across different e-co
 - **Product Management** — Add products by URL with auto-detect or custom CSS selector price extraction
 - **Multi-Source Price Comparison** — Each product can have alternative store URLs, checked alongside the main one and plotted as separate lines per store
 - **Suggested Alternate Links (candidates)** — Finds the same product on other stores (same country domain) by product code (EAN/GTIN/UPC/ASIN), model number, product name, or its title keywords; suggested links are only candidates until you review them: cheaper ones are shown in the product detail page, one to approve (starts being tracked on every price check) or dismiss (never suggested again). A "New Links Found" dashboard stat and a per-product badge track pending candidates
+- **Cross-Currency Prices** — Prices on store pages in a different currency (e.g. EUR) are detected and converted to the product's currency using free exchange rates (ECB/frankfurter + open.er-api, cached for 12 h), so price checks and "cheaper than" comparisons work across currencies; the original page price is kept and shown alongside the converted one
 - **Scheduled Price Checks** — Configurable check times (default: 9 AM and 2 PM)
 - **Price History Charts** — Interactive Chart.js graphs showing price trends over time
 - **Minimum Price Tracking** — Highlights the lowest price ever recorded for each product
@@ -29,8 +30,9 @@ A web application that monitors price changes for products across different e-co
 │   ├── models.py           # Database models (User, Product, PriceEntry)
 │   │   └── (also declares TelegramNotification & AppSettings — currently unused)
 │   ├── main.py             # Application entry point
-│   ├── price_checker.py    # Web scraping & price extraction logic
-│   ├── alternate_links.py  # Finds the same product on other stores (code / model number / name / title keywords) as reviewable candidates
+│   ├── price_checker.py    # Web scraping & price extraction logic (price + currency)
+│   ├── exchange_rates.py   # Free exchange-rate service (ECB/frankfurter + open.er-api, TTL cache, stale fallback)
+│   ├── alternate_links.py  # Finds the same product on other stores (code / model number / name / title keywords) as reviewable candidates, cross-currency
 │   ├── graph_generator.py  # Matplotlib chart generation (PNG)
 │   ├── telegram_notifier.py# Telegram bot notifications (per-user chat ID support)
 │   ├── scheduler.py        # APScheduler for periodic checks (price checks + database backup)
@@ -88,6 +90,8 @@ python main.py
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for automatic alternate-link discovery |
 | `ALTERNATE_LINKS_MAX` | `3` | Max candidate (suggested) links per product (min 1) |
+| `FX_RATE_TTL_HOURS` | `12` | Hours before a fresh exchange-rate fetch (free ECB/frankfurter + open.er-api, no API key) |
+| `FX_RATE_MAX_STALE_HOURS` | `168` | Max age of a cached rate table still used as fallback when a fresh fetch fails |
 | `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |
 | `HOST` | `0.0.0.0` | Bind address |
 | `ENABLE_SIGNUP` | `true` | Allow new user registrations (`true`/`false`) |
@@ -144,6 +148,8 @@ Each user configures their own Telegram notifications through the web interface:
 ### How "current price" works
 
 A product can have several price sources (the main URL plus alternative stores). The **current price** is always the **cheapest price across all sources at the time of the last check** (the minimum of that check run). The **minimum price** shown for a product is the **all-time minimum** — the lowest of every price ever recorded.
+
+Sources that price in a different currency are **converted to the product's currency** (free exchange rates, cached — see Price Extraction Strategies) before the comparison, so the cheapest-source logic works across currencies.
 
 ### Notification Types
 
@@ -343,6 +349,8 @@ The auto-detect scraper then tries these methods in order (most → least reliab
 
 Price strings handle both EU (`1.234,56`) and US (`1,234.56`) number formats, and a sanity cap of `< 100000` is applied to reject false positives.
 
+Each strategy also extracts the **currency** when the page provides a machine signal — JSON-LD `priceCurrency`, embedded-JSON `currency` keys, `product:price:currency` / `itemprop="priceCurrency"` meta tags, or a currency word next to the number in the price text (e.g. `289 RON`, `27,95 EUR`). When none is found, the URL's country TLD is used as a guess (`com.ro` → RON); if that's unknown too, the product's own currency is assumed. Prices in a foreign currency are converted to the product's currency with free exchange rates (ECB via frankfurter.dev, fallback open.er-api — no API key needed; cached for `FX_RATE_TTL_HOURS`) before being recorded or compared, so multi-source charts and "cheaper than" logic stay correct across currencies.
+
 If auto-detection fails, you can set a **custom CSS selector** when adding the product (`scraper_type: "custom"`).
 
 ## 🔎 Suggested Store Links (Alternate-Link Discovery)
@@ -357,6 +365,8 @@ Four matching methods are tried in order of reliability, and discovery stops as 
 4. **Title keywords** — only if method 3 found nothing: the same title is searched **unquoted** (Google-style keywords), which catches stores that phrase the product differently. Every hit still has to pass the same name-match gate as method 3, so the looser search doesn't let in unrelated products.
 
 For methods 1 and 3, only results from **other stores with the same country domain suffix** are kept (e.g. a `.ro` product only finds other `.ro` sites) and price-comparison aggregators (price.ro, compari.ro, idealo, …) are never kept. Every candidate page is fetched and its price extracted (only candidates cheaper than the current price are suggested; up to `ALTERNATE_LINKS_MAX` at a time).
+
+**Cross-currency:** web searches carry the original site's country as a hint, and candidate pages priced in a different currency (e.g. an EUR shop) are converted into the product's currency with the same free exchange rates as the price checks (see above). The suggested price shown is the converted one, with the original page price kept underneath (e.g. "page price 27,95 EUR"). A candidate whose price can't be converted is skipped rather than compared blindly.
 
 **How to trigger it:**
 - **Manually** — "🔎 Find Links" button on the product detail page (`POST /api/products/{id}/find-alternates`).

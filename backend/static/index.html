@@ -1839,8 +1839,10 @@
                         '<div class="candidate-url">' + escapeHtml(c.url) + '</div>' +
                         '<div class="candidate-meta">' + meta + '</div>';
                     const priceEl = document.createElement('div');
+                    const foreign = c.price_currency && c.original_price != null && c.price_currency !== cur;
                     if (c.price != null) {
-                        priceEl.innerHTML = '<span class="price-badge price-min">' + formatPrice(c.price, cur) + '</span>';
+                        priceEl.innerHTML = '<span class="price-badge price-min">' + formatPrice(c.price, cur) + '</span>' +
+                            (foreign ? '<div class="muted-sm">page price ' + formatPrice(c.original_price, c.price_currency) + '</div>' : '');
                     } else {
                         priceEl.innerHTML = '<span class="muted-sm">no price found</span>';
                     }

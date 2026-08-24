@@ -1,13 +1,15 @@
 """Test the find_alternate_links orchestration with the network layer mocked.
 
 Covers: code method + early stop, model method, name method, keyword (loose title)
-method, no-cheaper outcome, URL exclusions (main / existing alternates / dismissed)
-and the ASIN branch. No network access is required.
+method, no-cheaper outcome, URL exclusions (main / existing alternates / dismissed),
+the ASIN branch and cross-currency candidates (converted to the product currency,
+skipped when no rate is available). No network access is required.
 """
 import json
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 
 _tmpdir = tempfile.mkdtemp(prefix="pm_disc_")
@@ -17,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import database as dbmod  # noqa: E402
 import alternate_links as alt  # noqa: E402
+import exchange_rates  # noqa: E402
 from models import Base, LinkCandidate, PriceEntry, Product  # noqa: E402
 
 SessionLocal = alt.SessionLocal
@@ -24,17 +27,25 @@ Base.metadata.create_all(dbmod.engine)
 
 alt.FETCH_DELAY_SECONDS = 0.0   # don't sleep in tests
 
+# Deterministic, network-free rate table: 1 EUR = 5.0 RON (etc.)
+exchange_rates._cache = {
+    "rates": {"EUR": 1.0, "RON": 5.0, "USD": 1.1, "GBP": 0.85},
+    "fetched_at": time.time(),
+    "source": "test",
+    "date": "2026-01-01",
+}
+
 
 def now_utc():
     return datetime.now(timezone.utc)
 
 
-def jsonld_page(name, price, extra=None, extra_body=""):
+def jsonld_page(name, price, extra=None, extra_body="", currency="RON"):
     obj = {
         "@context": "https://schema.org",
         "@type": "Product",
         "name": name,
-        "offers": {"@type": "Offer", "price": f"{price:.2f}", "priceCurrency": "RON"},
+        "offers": {"@type": "Offer", "price": f"{price:.2f}", "priceCurrency": currency},
     }
     if extra:
         obj.update(extra)
@@ -72,9 +83,10 @@ def run_with_mocks(pid, pages, searches, mock_name_verify=True):
             raise ConnectionError(f"mock: no page for {url}")
         return pages[url]
 
-    def fake_search(code, suffix, main_host, limit=10, quoted=True):
+    def fake_search(code, suffix, main_host, limit=10, quoted=True, market=""):
         calls.setdefault("search", []).append(code)
         calls.setdefault("search_quoted", []).append(quoted)
+        calls.setdefault("search_market", []).append(market)
         val = searches.get(code, [])
         if isinstance(val, dict):  # per-quoted-ness results: {True: [...], False: [...]}
             val = val.get(quoted, [])
@@ -233,7 +245,7 @@ def main():
             raise ConnectionError(f"mock: no page for {url}")
         return pages[url]
 
-    def fake_search(code, suffix, main_host, limit=10, quoted=True):
+    def fake_search(code, suffix, main_host, limit=10, quoted=True, market=""):
         raise AssertionError("web search must not run for the ASIN branch")
 
     orig_fetch, orig_search = alt._fetch_page, alt._search_candidates
@@ -270,6 +282,48 @@ def main():
         "https://mea.ro/product-g", "https://kit.ro/kit", "https://altex.ro/ram"
     ], calls["fetches"]
     assert pending_for(pid) == {"https://altex.ro/ram": (600.0, "keyword")}, pending_for(pid)
+
+    # ── H: cross-currency candidate (EUR page, RON product) is converted ──
+    # 27.95 EUR x 5.0 RON/EUR = 139.75 RON < 289 RON current price.
+    pages = {
+        "https://mea.ro/product-h": jsonld_page("Rota Mtbiker R1 700x35C", 289, {"gtin": "4026495957762"}),
+        "https://rosebikes.example/tire": jsonld_page("Rota R1 700x35C", 27.95, {"gtin": "4026495957762"}, currency="EUR"),
+    }
+    pid = seed_product("H", "https://mea.ro/product-h", price=289)
+    summary, calls = run_with_mocks(pid, pages, {"4026495957762": ["https://rosebikes.example/tire"]})
+    assert summary["success"] is True, summary
+    assert summary["exchange_rates"] == {"source": "test", "date": "2026-01-01"}, summary
+    assert summary["candidates_found"] == 1, summary
+    assert calls["search_market"] == ["ro-ro"], calls["search_market"]  # market hint from the .ro suffix
+    assert pending_for(pid) == {"https://rosebikes.example/tire": (139.75, "code")}, pending_for(pid)
+    s = SessionLocal()
+    try:
+        row = s.query(LinkCandidate).filter(
+            LinkCandidate.product_id == pid, LinkCandidate.status == "pending").first()
+        assert row.original_price == 27.95, row.original_price
+        assert row.price_currency == "EUR", row.price_currency
+    finally:
+        s.close()
+
+    # ── I: same EUR candidate but exchange rates unavailable -> skipped, not stored ──
+    pages = {
+        "https://mea.ro/product-i": jsonld_page("Rota Mtbiker R1 700x35C", 289, {"gtin": "4026495957762"}),
+        "https://rosebikes.example/tire": jsonld_page("Rota R1 700x35C", 27.95, {"gtin": "4026495957762"}, currency="EUR"),
+    }
+    pid = seed_product("I", "https://mea.ro/product-i", price=289)
+    orig_get_rates = alt.get_rates
+    saved_cache = exchange_rates._cache
+    try:
+        alt.get_rates = lambda: None
+        exchange_rates._cache = None
+        summary, calls = run_with_mocks(pid, pages, {"4026495957762": ["https://rosebikes.example/tire"]})
+    finally:
+        alt.get_rates = orig_get_rates
+        exchange_rates._cache = saved_cache
+    assert summary["success"] is True, summary
+    assert summary["exchange_rates"] is None, summary
+    assert summary["candidates_found"] == 0 and summary["pending_candidates"] == 0, summary
+    assert pending_for(pid) == {}, pending_for(pid)
 
     print("ALL DISCOVERY ORCHESTRATION TESTS PASSED")
 

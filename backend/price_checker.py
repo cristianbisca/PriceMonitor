@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from database import SessionLocal
+from exchange_rates import convert_price, currency_code
 from models import Product, PriceEntry
 
 logger = logging.getLogger(__name__)
@@ -67,57 +68,160 @@ def extract_price_auto(html: str, url: str) -> Optional[float]:
     - Then data-testid (SPA test hooks that are usually accurate)
     - Then JSON-LD with URL matching to pick the right variant
     - Finally fallback strategies
+
+    Use extract_price_with_currency when the price's currency is needed too.
+    """
+    result = extract_price_with_currency(html, url)
+    return result[0] if result is not None else None
+
+
+def extract_price_with_currency(html: str, url: str) -> Optional[Tuple[float, Optional[str]]]:
+    """
+    Attempt to extract price and currency using multiple strategies.
+    Returns (price, currency) or None if no price was found. The currency is a
+    machine-readable signal from the page (JSON-LD priceCurrency, embedded JSON,
+    meta tags, or a currency word in the price text); it may be None even when
+    the price was found, in which case the caller can fall back to
+    resolve_page_currency() to guess from the URL's country TLD.
+
+    Strategy order is the same as extract_price_auto (reliability-first).
     """
     soup = BeautifulSoup(html, "html.parser")
 
     # Strategy 1: Embedded SSR JSON matched by product ID from URL (most reliable for SPAs like Notino)
-    price = _extract_embedded_json_price(html, url)
-    if price is not None:
-        logger.info(f"Extracted price from embedded JSON: {price}")
-        return price
+    result = _extract_embedded_json_price(html, url)
+    if result is not None:
+        logger.info(f"Extracted price from embedded JSON: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     # Strategy 2: data-testid attributes (SPAs use these for test automation)
-    price = _extract_testid_price(soup)
-    if price is not None:
-        logger.info(f"Extracted price from data-testid: {price}")
-        return price
+    result = _extract_testid_price(soup)
+    if result is not None:
+        logger.info(f"Extracted price from data-testid: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     # Strategy 3: JSON-LD structured data with URL matching (schema.org/Product)
-    price = _extract_jsonld_price(soup, url)
-    if price is not None:
-        logger.info(f"Extracted price from JSON-LD: {price}")
-        return price
+    result = _extract_jsonld_price(soup, url)
+    if result is not None:
+        logger.info(f"Extracted price from JSON-LD: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     # Strategy 4: Meta tags with price info (Open Graph, Facebook)
-    price = _extract_meta_price(soup)
-    if price is not None:
-        logger.info(f"Extracted price from meta tags: {price}")
-        return price
+    result = _extract_meta_price(soup)
+    if result is not None:
+        logger.info(f"Extracted price from meta tags: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     # Strategy 5: Amazon-specific price (priceToPay / corePriceDisplay / a-offscreen).
     # Gated to Amazon hosts so it cannot affect other sites. Placed before the generic
     # selector strategy because Amazon splits its price into sub-spans (.a-price-whole /
     # .a-price-fraction) which would make the generic [class*="price"] match drop decimals.
     if "amazon." in url.lower():
-        price = _extract_amazon_price(soup)
-        if price is not None:
-            logger.info(f"Extracted Amazon price: {price}")
-            return price
+        result = _extract_amazon_price(soup)
+        if result is not None:
+            logger.info(f"Extracted Amazon price: {result[0]}{_ccy_suffix(result[1])}")
+            return result
 
     # Strategy 6: Common price-related CSS selectors
-    price = _extract_selector_price(soup)
-    if price is not None:
-        logger.info(f"Extracted price from CSS selectors: {price}")
-        return price
+    result = _extract_selector_price(soup)
+    if result is not None:
+        logger.info(f"Extracted price from CSS selectors: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     # Strategy 7: Price in microdata
-    price = _extract_microdata_price(soup)
-    if price is not None:
-        logger.info(f"Extracted price from microdata: {price}")
-        return price
+    result = _extract_microdata_price(soup)
+    if result is not None:
+        logger.info(f"Extracted price from microdata: {result[0]}{_ccy_suffix(result[1])}")
+        return result
 
     logger.warning(f"No price found for URL: {url}")
     return None
+
+
+def _ccy_suffix(currency) -> str:
+    return f" {currency}" if currency else ""
+
+
+def resolve_page_currency(currency, url: str) -> Optional[str]:
+    """The page currency to use for comparisons: a machine-readable signal from
+    the page first, then a guess from the URL's country TLD as a last resort."""
+    return currency if currency else _currency_from_url(url)
+
+
+# Currency signals that appear in formatted price text, in match priority order.
+_CURRENCY_TEXT_SIGNALS = (
+    (r"€|\beur\b", "EUR"),
+    (r"£|\bgbp\b", "GBP"),
+    (r"\blei\b|\bron\b", "RON"),
+    (r"\bpln\b|zł", "PLN"),
+    (r"\b(hzk|czk)\b|č", "CZK"),
+    (r"\b(huf|ft)\b", "HUF"),
+    (r"\btry\b|₺", "TRY"),
+    (r"\bchf\b", "CHF"),
+    (r"\brub\b|₽", "RUB"),
+    (r"\busd\b|\$", "USD"),
+)
+
+
+def _currency_from_text(text: str) -> Optional[str]:
+    """Best-effort currency code from formatted price text (a symbol like '€'
+    or a currency word like 'lei'). Returns None when nothing recognizable is present."""
+    if not text:
+        return None
+    lowered = text.lower()
+    for pattern, code in _CURRENCY_TEXT_SIGNALS:
+        if re.search(pattern, lowered):
+            return code
+    return None
+
+
+# Country suffix -> currency for the common shop TLDs. A last-resort guess used
+# when the page carries no machine-readable currency signal (see
+# resolve_page_currency), e.g. rosebikes.ro without JSON-LD currency.
+_TLD_CURRENCY = {
+    "ro": "RON", "md": "MDL", "bg": "BGN", "rs": "RSD", "hu": "HUF", "pl": "PLN",
+    "cz": "CZK",
+    "de": "EUR", "at": "EUR", "be": "EUR", "es": "EUR", "fr": "EUR", "ie": "EUR",
+    "it": "EUR", "nl": "EUR", "pt": "EUR", "fi": "EUR", "gr": "EUR", "lu": "EUR",
+    "si": "EUR", "sk": "EUR", "ee": "EUR", "lv": "EUR", "lt": "EUR", "hr": "EUR",
+    "cy": "EUR", "mt": "EUR", "me": "EUR",
+    "uk": "GBP", "gb": "GBP",
+    "us": "USD", "ca": "CAD", "au": "AUD", "nz": "NZD",
+    "ch": "CHF", "no": "NOK", "se": "SEK", "dk": "DKK", "is": "ISK",
+    "tr": "TRY", "il": "ILS", "br": "BRL", "mx": "MXN", "ar": "ARS", "cl": "CLP",
+    "jp": "JPY", "cn": "CNY", "kr": "KRW", "in": "INR", "sg": "SGD", "hk": "HKD",
+    "my": "MYR", "id": "IDR", "th": "THB", "vn": "VND", "ph": "PHP", "tw": "TWD",
+    "za": "ZAR", "ng": "NGN", "ae": "AED", "sa": "SAR", "ua": "UAH", "ge": "GEL",
+}
+
+# Two-part suffixes mapped to the single letter used in _TLD_CURRENCY
+# (mirrors alternate_links.TWO_PART_CC_TLDS; kept local to avoid a circular import)
+_TWO_PART_SUFFIX_CURRENCY = {
+    "com.ro": "ro", "net.ro": "ro", "org.ro": "ro",
+    "com.de": "de", "com.pl": "pl", "com.ar": "ar", "com.au": "au",
+    "com.br": "br", "com.cn": "cn", "com.hk": "hk", "com.mx": "mx",
+    "com.my": "my", "com.sg": "sg", "com.tr": "tr", "com.tw": "tw",
+    "co.in": "in", "co.jp": "jp", "co.nz": "nz", "co.za": "za",
+    "co.uk": "uk", "me.uk": "uk", "net.uk": "uk", "org.uk": "uk",
+}
+
+
+def _currency_from_url(url: str) -> Optional[str]:
+    """Currency guess from the URL's country TLD (e.g. shop.com.ro -> RON)."""
+    try:
+        host = (urlparse(url).netloc or "").lower().split(":")[0]
+    except Exception:
+        return None
+    if host.startswith("www."):
+        host = host[4:]
+    parts = host.split(".")
+    if len(parts) < 2:
+        return None
+    if len(parts) >= 3:
+        two = _TWO_PART_SUFFIX_CURRENCY.get(".".join(parts[-2:]))
+        if two:
+            return _TLD_CURRENCY.get(two)
+    return _TLD_CURRENCY.get(parts[-1])
 
 
 def _parse_price_string(price_str: str) -> Optional[float]:
@@ -159,75 +263,90 @@ def _parse_price_string(price_str: str) -> Optional[float]:
         return None
 
 
-def _spec_price(spec) -> Optional[float]:
+def _spec_price(spec) -> Optional[Tuple[float, Optional[str]]]:
     """Read the price from a schema.org (Unit)PriceSpecification: a mapping or list
-    carrying 'price' / 'minPrice' / 'value'."""
+    carrying 'price' / 'minPrice' / 'value'. Returns (price, currency) when the
+    specification also carries a 'priceCurrency'."""
     if isinstance(spec, list):
         for item in spec:
-            value = _spec_price(item)
-            if value:
-                return value
+            result = _spec_price(item)
+            if result:
+                return result
         return None
     if isinstance(spec, dict):
+        currency = spec.get('priceCurrency')
         for key in ('price', 'minPrice', 'value'):
             if key in spec:
                 value = _parse_price_string(str(spec[key]))
                 if value:
-                    return value
+                    return (value, currency)
     return None
 
 
-def _offer_price(offer) -> Optional[float]:
+def _offer_price(offer) -> Optional[Tuple[float, Optional[str]]]:
     """Price of a single schema.org Offer: a flat 'price' first, then a
-    'priceSpecification' (used by stores such as altex that omit the flat price)."""
+    'priceSpecification' (used by stores such as altex that omit the flat price).
+    Returns (price, currency)."""
     if not isinstance(offer, dict):
         return None
+    currency = offer.get('priceCurrency')
     if 'price' in offer:
         value = _parse_price_string(str(offer['price']))
         if value:
-            return value
-    return _spec_price(offer.get('priceSpecification'))
+            return (value, currency)
+    result = _spec_price(offer.get('priceSpecification'))
+    if result:
+        return (result[0], result[1] or currency)
+    return None
 
 
-def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]:
-    """Extract price from JSON-LD structured data.
+def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from JSON-LD structured data.
 
-    When a URL is provided, attempts to match the Product @id against the URL
-    to select the correct variant when multiple products are present.
+    Handles top-level objects, JSON arrays and @graph wrappers (some stores,
+    e.g. rosebikes.ro, wrap the Product in {"@graph": [...]}). When a URL is
+    provided, attempts to match the Product @id against the URL to select the
+    correct variant when multiple products are present.
     """
     # Extract path portion of URL for matching (e.g., /jean-paul-gaultier/divine-...)
     url_path = ""
     if url:
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         url_path = parsed.path.rstrip('/')
     
-    candidates = []  # list of (matched_bool, price_float)
+    candidates = []  # list of (matched_bool, price_float, currency_or_None)
     
     for script in soup.find_all('script', type='application/ld+json'):
         try:
-            data = json.loads(script.string)
+            data = json.loads(script.string or script.get_text() or "")
 
-            # Handle both single object and array of objects
+            # Handle single object, array of objects, or an @graph wrapper
             if isinstance(data, dict):
-                objects = [data]
+                graph = data.get('@graph')
+                objects = graph if isinstance(graph, list) else [data]
             elif isinstance(data, list):
                 objects = data
             else:
                 continue
 
             for obj in objects:
+                if not isinstance(obj, dict):
+                    continue
                 price = None
+                currency = None
                 matched_url = False
                 
                 # Look for offers with price (flat 'price' or schema.org 'priceSpecification')
                 offers = obj.get('offers', {})
                 if isinstance(offers, dict):
-                    price = _offer_price(offers)
+                    result = _offer_price(offers)
+                    if result:
+                        price, currency = result
                 elif isinstance(offers, list):
                     for offer in offers:
-                        price = _offer_price(offer)
-                        if price:
+                        result = _offer_price(offer)
+                        if result:
+                            price, currency = result
                             break
 
                 # Look directly at the object for price (if it's a Product)
@@ -236,6 +355,9 @@ def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]
                         price = _parse_price_string(str(obj['price']))
                     if 'offers' in obj and isinstance(obj['offers'], dict) and price is None:
                         price = _parse_price_string(str(obj['offers'].get('price')))
+                        currency = obj['offers'].get('priceCurrency') or currency
+                    if currency is None:
+                        currency = obj.get('priceCurrency')
                     
                     # Check URL matching via @id
                     obj_id = obj.get('@id', '')
@@ -247,18 +369,18 @@ def _extract_jsonld_price(soup: BeautifulSoup, url: str = "") -> Optional[float]
                                        _paths_match(obj_id, url))
 
                 if price:
-                    candidates.append((matched_url, price))
+                    candidates.append((matched_url, price, currency))
 
         except (json.JSONDecodeError, TypeError, KeyError):
             continue
 
     # Prefer URL-matched candidate; otherwise return first found
-    for matched, price in candidates:
+    for matched, price, currency in candidates:
         if matched:
-            return price
+            return (price, currency)
     
     if candidates:
-        return candidates[0][1]
+        return (candidates[0][1], candidates[0][2])
 
     return None
 
@@ -277,27 +399,31 @@ def _paths_match(obj_id: str, page_url: str) -> bool:
         return False
 
 
-def _extract_meta_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price from meta tags."""
+def _extract_meta_price(soup: BeautifulSoup) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from meta tags."""
     # Facebook/Open Graph price meta tag
     meta_price = soup.find('meta', property='product:price:amount')
     if meta_price and meta_price.get('content'):
         price = _parse_price_string(meta_price['content'])
         if price:
-            return price
+            meta_currency = soup.find('meta', property='product:price:currency')
+            currency = meta_currency.get('content') if meta_currency else None
+            return (price, currency)
 
     # Schema.org meta tag
     meta_schema = soup.find('meta', attrs={'itemprop': 'price'})
     if meta_schema and meta_schema.get('content'):
         price = _parse_price_string(meta_schema['content'])
         if price:
-            return price
+            currency_elem = soup.find(attrs={'itemprop': 'priceCurrency'})
+            currency = (currency_elem.get('content') or currency_elem.get_text(strip=True) or None) if currency_elem else None
+            return (price, currency)
 
     return None
 
 
-def _extract_testid_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price from elements with data-testid attributes.
+def _extract_testid_price(soup: BeautifulSoup) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from elements with data-testid attributes.
     
     Many modern SPAs (Notino, etc.) use data-testid for test automation
     which conveniently includes price elements like data-testid='pd-price'.
@@ -313,19 +439,19 @@ def _extract_testid_price(soup: BeautifulSoup) -> Optional[float]:
             if price_str:
                 price = _parse_price_string(price_str)
                 if price:
-                    return price
+                    return (price, _currency_from_text(price_str))
             # Then check text content
             text = elem.get_text(strip=True)
             if text:
                 price = _parse_price_string(text)
                 if price and price < 100000:
-                    return price
+                    return (price, _currency_from_text(text))
 
     return None
 
 
-def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
-    """Extract price from embedded SSR JSON data in script tags.
+def _extract_embedded_json_price(html: str, url: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from embedded SSR JSON data in script tags.
 
     Sites like Notino embed product data as JSON in the HTML for hydration.
     This looks for patterns like CatalogVariant:{id}.price.value in the payload.
@@ -388,7 +514,7 @@ def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
                         if isinstance(price_obj, dict) and 'value' in price_obj:
                             price = _parse_price_string(str(price_obj['value']))
                             if price:
-                                return price
+                                return (price, price_obj.get('currency'))
 
             # Strategy B: Recursive search for price objects with value+currency
             price_found = _search_json_for_price(data)
@@ -401,12 +527,12 @@ def _extract_embedded_json_price(html: str, url: str) -> Optional[float]:
     return None
 
 
-def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional[float]:
+def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional[Tuple[float, Optional[str]]]:
     """Recursively search a parsed JSON object for price patterns.
 
     Looks for objects with 'value' and 'currency' keys (common SSR pattern),
     structured price objects {'price': {'selling_price'/'base_price'/'value': ...}},
-    or direct numeric 'price' fields.
+    or direct numeric 'price' fields. Returns (price, currency).
     Entries for virtual/add-on products (type_id == 'virtual', e.g. warranty
     extensions) are skipped so their prices are never mistaken for the product's
     own price.
@@ -421,7 +547,7 @@ def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional
         if not virtual and 'value' in obj and 'currency' in obj:
             value = _parse_price_string(str(obj['value']))
             if value and value < 100000:
-                return value
+                return (value, obj.get('currency'))
 
         price = obj.get('price')
 
@@ -434,15 +560,15 @@ def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional
                 if isinstance(v, str):
                     pv = _parse_price_string(v)
                     if pv and pv < 100000:
-                        return pv
+                        return (pv, price.get('currency'))
                 elif isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < float(v) < 100000:
-                    return float(v)
+                    return (float(v), price.get('currency'))
 
         # Check for direct price key with numeric value (skip virtual add-on entries)
         if isinstance(price, (int, float)) and not isinstance(price, bool) and not virtual:
             price_value = float(price)
             if 0 < price_value < 100000:
-                return price_value
+                return (price_value, obj.get('currency'))
 
         # Recurse into children
         for key, val in obj.items():
@@ -459,8 +585,8 @@ def _search_json_for_price(obj, depth: int = 0, max_depth: int = 10) -> Optional
     return None
 
 
-def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price from Amazon product pages (amazon.com/.de/.co.uk/etc.).
+def _extract_amazon_price(soup: BeautifulSoup) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from Amazon product pages (amazon.com/.de/.co.uk/etc.).
 
     Amazon splits its displayed price into sub-spans (.a-price-symbol / .a-price-whole /
     .a-price-fraction), so the generic [class*="price"] selector strategy would grab only
@@ -474,7 +600,7 @@ def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
             text = elem.get_text(" ", strip=True)
             price = _parse_price_string(text)
             if price and 0 < price < 100000:
-                return price
+                return (price, _currency_from_text(text))
 
     # 2. The core price display block (desktop feature div).
     for container_id in ("corePriceDisplay_desktop_feature_div", "corePrice_feature_div"):
@@ -483,9 +609,10 @@ def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
             continue
         offscreen = container.select_one(".a-offscreen")
         if offscreen:
-            price = _parse_price_string(offscreen.get_text(" ", strip=True))
+            text = offscreen.get_text(" ", strip=True)
+            price = _parse_price_string(text)
             if price and 0 < price < 100000:
-                return price
+                return (price, _currency_from_text(text))
 
     # 3. First screen-reader (offscreen) price that isn't a list/RRP/null value.
     for elem in soup.select(".a-offscreen"):
@@ -497,13 +624,13 @@ def _extract_amazon_price(soup: BeautifulSoup) -> Optional[float]:
             continue  # skip list/reference prices
         price = _parse_price_string(text)
         if price and 0 < price < 100000:
-            return price
+            return (price, _currency_from_text(text))
 
     return None
 
 
-def _extract_selector_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price using common CSS selectors."""
+def _extract_selector_price(soup: BeautifulSoup) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) using common CSS selectors."""
     # Common price-related selectors
     selectors = [
         '[class*="price"]',
@@ -524,27 +651,29 @@ def _extract_selector_price(soup: BeautifulSoup) -> Optional[float]:
             if price_str:
                 price = _parse_price_string(price_str)
                 if price:
-                    return price
+                    return (price, _currency_from_text(price_str))
 
             # Then check text content
             text = elem.get_text(strip=True)
             if text:
                 price = _parse_price_string(text)
                 if price and price < 100000:  # Sanity check
-                    return price
+                    return (price, _currency_from_text(text))
 
     return None
 
 
-def _extract_microdata_price(soup: BeautifulSoup) -> Optional[float]:
-    """Extract price from HTML microdata."""
+def _extract_microdata_price(soup: BeautifulSoup) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract (price, currency) from HTML microdata."""
     price_elements = soup.find_all(attrs={'itemprop': 'price'})
+    currency_elem = soup.find(attrs={'itemprop': 'priceCurrency'})
+    currency = (currency_elem.get('content') or currency_elem.get_text(strip=True) or None) if currency_elem else None
     for elem in price_elements:
         text = elem.get('content') or elem.get_text(strip=True)
         if text:
             price = _parse_price_string(text)
             if price:
-                return price
+                return (price, currency or _currency_from_text(text))
 
     return None
 
@@ -633,8 +762,8 @@ def get_current_price(db, product_id: int) -> Optional[float]:
     return latest.price if latest else None
 
 
-def _extract_price_for_url(product: Product, url: str) -> Optional[float]:
-    """Fetch a single URL and extract the price using the product's scraper configuration."""
+def _extract_price_for_url(product: Product, url: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Fetch a single URL and extract (price, currency) using the product's scraper configuration."""
     # Fetch the page (browser-impersonated to get past bot walls like Amazon's)
     html = _fetch_page(url)
 
@@ -643,10 +772,12 @@ def _extract_price_for_url(product: Product, url: str) -> Optional[float]:
         elem = soup.select_one(product.custom_selector)
         if elem:
             price_str = elem.get('data-price') or elem.get('content') or elem.get_text(strip=True)
-            return _parse_price_string(price_str)
+            price = _parse_price_string(price_str)
+            if price:
+                return (price, _currency_from_text(price_str or ""))
         return None
 
-    return extract_price_auto(html, url)
+    return extract_price_with_currency(html, url)
 
 
 def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
@@ -689,6 +820,11 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
         ).order_by(PriceEntry.price.asc()).first()
         current_min = min_entry.price if min_entry else None
 
+        # Currency the product's prices are recorded in; sources priced in another
+        # currency are converted to it (see exchange_rates) so every source in a
+        # check cycle is comparable.
+        prod_ccy = currency_code(product.currency) if product.currency else None
+
         # One shared timestamp for every entry in this run: it both stamps checked_at and
         # groups the entries into a check cycle (all sources checked "at the same time").
         cycle_ts = datetime.now(timezone.utc)
@@ -699,14 +835,28 @@ def check_product_price(product_id: int) -> Optional[PriceCheckResult]:
 
         for url, source_label in sources_to_check:
             try:
-                price = _extract_price_for_url(product, url)
+                extracted = _extract_price_for_url(product, url)
             except requests.RequestException as e:
                 logger.error(f"Failed to fetch {url}: {e}")
                 continue
 
-            if price is None:
+            if extracted is None:
                 logger.warning(f"Could not extract price for {product.name} ({url})")
                 continue
+
+            raw_price, page_currency = extracted
+            price = raw_price
+            page_ccy = resolve_page_currency(page_currency, url)
+            if page_ccy and prod_ccy and page_ccy != prod_ccy:
+                converted = convert_price(raw_price, page_ccy, prod_ccy)
+                if converted is None:
+                    logger.warning(
+                        f"Could not convert {raw_price} {page_ccy} from source {source_label} "
+                        f"to {prod_ccy} (no exchange rate available) - source skipped"
+                    )
+                    continue
+                price = converted
+                logger.info(f"Converted {raw_price} {page_ccy} -> {price} {prod_ccy} for source {source_label}")
 
             is_minimum = current_min is None or price < current_min
             entry = PriceEntry(

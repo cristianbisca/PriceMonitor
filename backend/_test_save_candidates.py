@@ -126,6 +126,24 @@ def main():
     assert new_count == 3 and pending_count == 3
     s.close()
 
+    # ── 5) 4-element pool values keep the original (pre-conversion) price ──
+    s = Session()
+    p = seed_product(s, "C")
+    pool5 = {
+        # [price (product currency), method, original_price, original_currency]
+        "https://fx.example/eu": [139.75, "code", 27.95, "EUR"],
+        "https://fx.example/local": [90.0, "name"],  # 2-element value (pre-conversion entries)
+    }
+    new_count, pending_count = _save_candidates(s, p, pool5, 289.0)
+    assert new_count == 2, new_count
+    row_eu = s.query(LinkCandidate).filter(LinkCandidate.url == "https://fx.example/eu").first()
+    row_local = s.query(LinkCandidate).filter(LinkCandidate.url == "https://fx.example/local").first()
+    assert row_eu.price == 139.75 and row_eu.original_price == 27.95, (row_eu.price, row_eu.original_price)
+    assert row_eu.price_currency == "EUR", row_eu.price_currency
+    assert row_local.price == 90.0, row_local.price
+    assert row_local.original_price is None and row_local.price_currency is None
+    s.close()
+
     print("ALL _save_candidates TESTS PASSED")
 
 

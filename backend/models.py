@@ -90,7 +90,9 @@ class LinkCandidate(Base):
     id = Column(Integer, primary_key=True, index=True)
     product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
     url = Column(String(2048), nullable=False)  # Candidate store URL (normalized, no trailing slash)
-    price = Column(Float, nullable=True)  # Price found on the candidate page at discovery time
+    price = Column(Float, nullable=True)  # Price in the product's currency at discovery time
+    original_price = Column(Float, nullable=True)  # Page price before currency conversion (== price when same currency)
+    price_currency = Column(String(10), nullable=True)  # Currency shown on the candidate page (e.g. "EUR")
     match_method = Column(String(20), nullable=True)  # "code" (EAN/UPC/GTIN/ASIN), "model" (MPN/model no), "name"
     status = Column(String(20), nullable=False, default="pending", index=True)  # pending / approved / dismissed
     found_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)

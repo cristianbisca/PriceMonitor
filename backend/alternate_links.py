@@ -46,14 +46,16 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from bs4 import BeautifulSoup
 
 from database import SessionLocal
+from exchange_rates import currency_code, get_rates, source_info
 from models import Product, LinkCandidate
 from price_checker import (
     SESSION,
     _fetch_page,
     _extract_main_domain,
     _get_alternative_urls,
-    extract_price_auto,
+    extract_price_with_currency,
     get_current_price,
+    resolve_page_currency,
 )
 
 logger = logging.getLogger(__name__)
@@ -334,14 +336,16 @@ def _host_of(url: str) -> str:
         return ""
 
 
-def _bing_rss_urls(code: str, quoted: bool = True) -> List[str]:
+def _bing_rss_urls(code: str, quoted: bool = True, market: str = "") -> List[str]:
     """Bing's RSS output carries plain result URLs (no /ck/a redirect wrapper).
 
     quoted=True wraps the query in double quotes (exact phrase); quoted=False does
-    a plain keyword search (looser, used by the "keyword" method).
+    a plain keyword search (looser, used by the "keyword" method). market is a
+    country hint ("ro-ro") that keeps results in the original's country.
     """
     q = f'"{code}"' if quoted else code
-    search_url = "https://www.bing.com/search?q=" + quote(q) + "&format=rss"
+    market_params = _market_search_params(market, style="bing")
+    search_url = "https://www.bing.com/search?q=" + quote(q) + "&format=rss" + market_params
     page = _fetch_page(search_url)
     urls = []
     for raw in re.findall(r"<link>\s*([^<]+?)\s*</link>", page):
@@ -368,14 +372,16 @@ def _resolve_bing_ck(href: str) -> str:
     return ""
 
 
-def _bing_html_urls(code: str, quoted: bool = True) -> List[str]:
+def _bing_html_urls(code: str, quoted: bool = True, market: str = "") -> List[str]:
     """Result URLs from Bing's HTML page; /ck/a redirects are resolved to real URLs.
 
     quoted=True wraps the query in double quotes (exact phrase); quoted=False does
-    a plain keyword search (looser, used by the "keyword" method).
+    a plain keyword search (looser, used by the "keyword" method). market is a
+    country hint ("ro-ro") that keeps results in the original's country.
     """
     q = f'"{code}"' if quoted else code
-    search_url = "https://www.bing.com/search?q=" + quote(q)
+    market_params = _market_search_params(market, style="bing")
+    search_url = "https://www.bing.com/search?q=" + quote(q) + market_params
     page = _fetch_page(search_url)
     soup = BeautifulSoup(page, "html.parser")
     urls = []
@@ -393,44 +399,58 @@ def _bing_html_urls(code: str, quoted: bool = True) -> List[str]:
     return urls
 
 
-def _search_engines(query: str, quoted: bool = True):
+def _market_search_params(market: str, style: str) -> str:
+    """Query-string country hint for a search engine. market is "cc-cc" (e.g. "ro-ro");
+    style "ddg" -> &kl=ro-ro, style "bing" -> &setmkt=ro-RO&cc=RO. Empty when no market."""
+    if not market:
+        return ""
+    cc = market.split("-")[-1].lower()
+    if style == "bing":
+        return f"&setmkt={cc}-{cc.upper()}&cc={cc.upper()}"
+    return f"&kl={cc}-{cc}"
+
+
+def _search_engines(query: str, quoted: bool = True, market: str = ""):
     """Yield result-URL lists from several search backends, best effort.
 
     No single engine is reliable from server IPs (DuckDuckGo frequently serves a
     reduced result set to automated clients), so every engine that answers is
     merged in _search_candidates. quoted=True wraps the query in double quotes
-    (exact phrase); quoted=False does a plain keyword search.
+    (exact phrase); quoted=False does a plain keyword search. market is a country
+    hint ("ro-ro") that keeps results in the original's country.
     """
     q = f'"{query}"' if quoted else query
+    market_params = _market_search_params(market, style="ddg")
     try:
-        yield _ddg_urls(_fetch_page("https://html.duckduckgo.com/html/?q=" + quote(q)), "a.result__a")
+        yield _ddg_urls(_fetch_page("https://html.duckduckgo.com/html/?q=" + quote(q) + market_params), "a.result__a")
     except Exception as e:
         logger.warning(f"DuckDuckGo search failed for {query}: {e}")
     try:
-        yield _ddg_urls(_fetch_page("https://lite.duckduckgo.com/lite/?q=" + quote(q)), "a.result-link")
+        yield _ddg_urls(_fetch_page("https://lite.duckduckgo.com/lite/?q=" + quote(q) + market_params), "a.result-link")
     except Exception as e:
         logger.warning(f"DuckDuckGo Lite search failed for {query}: {e}")
     try:
-        yield _bing_rss_urls(query, quoted)
+        yield _bing_rss_urls(query, quoted, market)
     except Exception as e:
         logger.warning(f"Bing RSS search failed for {query}: {e}")
     try:
-        yield _bing_html_urls(query, quoted)
+        yield _bing_html_urls(query, quoted, market)
     except Exception as e:
         logger.warning(f"Bing HTML search failed for {query}: {e}")
 
 
 def _search_candidates(query: str, suffix: str, main_host: str, limit: int = SEARCH_RESULT_LIMIT,
-                       quoted: bool = True) -> List[str]:
+                       quoted: bool = True, market: str = "") -> List[str]:
     """Web-search the query and keep results on the same domain suffix.
 
     Merges results from several search engines (DuckDuckGo html/lite, Bing RSS/HTML)
     so one flaky or bot-limited engine does not leave the others untried.
     quoted=True searches the exact phrase; quoted=False does a plain keyword search.
+    market is a country hint ("ro-ro") that keeps results in the original's country.
     """
     candidates: List[str] = []
     seen = set()
-    for index, engine_urls in enumerate(_search_engines(query, quoted)):
+    for index, engine_urls in enumerate(_search_engines(query, quoted, market)):
         if len(candidates) >= limit:
             break
         if index:
@@ -458,9 +478,10 @@ def _asin_candidates(asin: str, suffix: str) -> List[str]:
     return [f"https://amazon.{tld}/dp/{asin}"]
 
 
-def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Optional[float]:
-    """Fetch a candidate page; return the price only if the exact product code is
-    present in the URL or the HTML (same-product proof) and a price is extractable.
+def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Optional[Tuple[float, Optional[str]]]:
+    """Fetch a candidate page; return (price, currency) only if the exact product
+    code is present in the URL or the HTML (same-product proof) and a price is
+    extractable.
 
     case_insensitive is used for MPN-style model numbers, which are uppercase in
     metadata but may appear in any casing on the page.
@@ -477,11 +498,11 @@ def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Op
     if not present:
         logger.info(f"Candidate {url} rejected: product code {code} not present on the page")
         return None
-    price = extract_price_auto(html, url)
-    if price is None or not (0 < price <= PRICE_SANE_MAX):
+    result = extract_price_with_currency(html, url)
+    if result is None or not (0 < result[0] <= PRICE_SANE_MAX):
         logger.info(f"Candidate {url} verified but no usable price found")
         return None
-    return price
+    return result
 
 
 def _iter_jsonld_objects(data):
@@ -634,9 +655,9 @@ def _extract_model_names(soup: BeautifulSoup) -> List[str]:
     return models
 
 
-def _verify_name_candidate(url: str, original_name: str) -> Optional[float]:
-    """Fetch a candidate page; return the price only if the page carries a matching
-    product name and a price is extractable."""
+def _verify_name_candidate(url: str, original_name: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Fetch a candidate page; return (price, currency) only if the page carries a
+    matching product name and a price is extractable."""
     try:
         html = _fetch_page(url)
     except Exception as e:
@@ -646,20 +667,42 @@ def _verify_name_candidate(url: str, original_name: str) -> Optional[float]:
     if not page_name or not _names_match(original_name, page_name):
         logger.info(f"Candidate {url} rejected: page name '{page_name}' does not match '{original_name}'")
         return None
-    price = extract_price_auto(html, url)
-    if price is None or not (0 < price <= PRICE_SANE_MAX):
+    result = extract_price_with_currency(html, url)
+    if result is None or not (0 < result[0] <= PRICE_SANE_MAX):
         logger.info(f"Candidate {url} verified but no usable price found")
         return None
-    return price
+    return result
+
+
+def _log_candidate(name: str, method: str, url: str, price, product_currency,
+                   original_price=None, original_currency=None):
+    """Log a stored candidate; foreign-currency page prices are noted separately."""
+    base = f"{name}: new candidate [{method}] {url} at {price} {product_currency}"
+    if (original_price is not None and original_currency
+            and currency_code(original_currency)
+            and currency_code(original_currency) != currency_code(product_currency)):
+        logger.info(f"{base} (page price {original_price} {original_currency})")
+    else:
+        logger.info(base)
+
+
+def _market_hint(suffix: str) -> str:
+    """Country search hint ("ro-ro") from the domain suffix ('com.ro' -> 'ro-ro')."""
+    cc = (suffix or "").rsplit(".", 1)[-1].lower()
+    return f"{cc}-{cc}" if cc else ""
 
 
 def _save_candidates(db, product: Product, pool: dict, current_price: Optional[float]):
     """Upsert this run's verified candidates as pending links.
 
-    pool maps normalized URL -> [price, method]. Only candidates cheaper than the
-    current price are stored (all verified ones when no price was ever recorded),
-    ranked by (match-method reliability, price), capped at ALTERNATE_LINKS_MAX.
-    Already dismissed URLs are never resuggested; pending rows get a price refresh.
+    pool maps normalized URL -> [price, method, original_price, original_currency].
+    price is in the product's currency (a cross-currency page price is converted
+    before being pooled); the last two items record the price as shown on the
+    candidate page and may be missing on entries that predate cross-currency
+    support (they are simply ignored). Only candidates cheaper than the current
+    price are stored (all verified ones when no price was ever recorded), ranked
+    by (match-method reliability, price), capped at ALTERNATE_LINKS_MAX. Already
+    dismissed URLs are never resuggested; pending rows get a price refresh.
     Returns (new_count, pending_count).
     """
     max_links = _max_links()
@@ -668,10 +711,13 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
         key=lambda kv: (METHOD_PRIORITY.get(kv[1][1], 99), kv[1][0] if kv[1][0] is not None else 1e9),
     )
     to_store = []
-    for url, (price, method) in ranked:
+    for url, value in ranked:
+        price, method = value[0], value[1]
         if current_price is not None and (price is None or price >= current_price):
             continue
-        to_store.append((url, price, method))
+        original_price = value[2] if len(value) > 2 else None
+        original_currency = value[3] if len(value) > 3 else None
+        to_store.append((url, price, method, original_price, original_currency))
         if len(to_store) >= max_links:
             break
 
@@ -682,18 +728,23 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
     }
 
     new_count = 0
-    for url, price, method in to_store:
+    for url, price, method, original_price, original_currency in to_store:
         if url in dismissed_urls:
             continue
         row = db.query(LinkCandidate).filter(
             LinkCandidate.product_id == product.id, LinkCandidate.url == url
         ).first()
         if row is None:
-            db.add(LinkCandidate(product_id=product.id, url=url, price=price, match_method=method, status="pending"))
+            db.add(LinkCandidate(product_id=product.id, url=url, price=price, match_method=method, status="pending",
+                                 original_price=original_price, price_currency=original_currency))
             new_count += 1
-            logger.info(f"{product.name}: new candidate [{method}] {url} at {price}")
+            _log_candidate(product.name, method, url, price, product.currency, original_price, original_currency)
         elif row.status == "pending":
             row.price = price
+            if original_price is not None:
+                row.original_price = original_price
+            if original_currency:
+                row.price_currency = original_currency
             if row.match_method is None or METHOD_PRIORITY.get(method, 99) < METHOD_PRIORITY.get(row.match_method, 99):
                 row.match_method = method
     db.commit()
@@ -731,6 +782,39 @@ def find_alternate_links(product_id: int) -> dict:
         current_price = get_current_price(db, product_id)
         original_soup = BeautifulSoup(original_html, "html.parser")
 
+        # Country hint for the web searches (keeps results in the original's country)
+        # and one exchange-rate snapshot for the whole run (12-hour cache, see
+        # exchange_rates). Candidates priced in another currency are converted into
+        # the product's currency before comparison; when rates are unavailable
+        # such candidates are skipped rather than compared raw.
+        market = _market_hint(suffix)
+        prod_ccy = currency_code(product.currency) if product.currency else None
+        fx_rates = get_rates()
+        if fx_rates is None:
+            logger.warning(
+                f"{product.name}: exchange rates unavailable - candidates priced in a "
+                f"currency other than {prod_ccy or 'the product currency'} will be skipped"
+            )
+
+        def to_product_currency(raw_price: float, page_currency: Optional[str], url: str):
+            """(price_in_product_currency, page_currency) or None when the page price
+            cannot be converted (no rate). The rates snapshot taken above is used;
+            a missing snapshot is never replaced by a fresh fetch (avoids stalling
+            the run on a dead FX endpoint)."""
+            page_ccy = resolve_page_currency(page_currency, url)
+            if not page_ccy or not prod_ccy or page_ccy == prod_ccy:
+                return (raw_price, page_ccy)
+            if fx_rates is not None:
+                from_ccy = fx_rates.get(page_ccy)
+                to_ccy = fx_rates.get(prod_ccy)
+                if from_ccy and to_ccy:
+                    return (round(raw_price * to_ccy / from_ccy, 2), page_ccy)
+            logger.warning(
+                f"Could not convert {raw_price} {page_ccy} to {prod_ccy} for {url} "
+                f"(no exchange rate) - candidate skipped"
+            )
+            return None
+
         # URLs never considered again: the main URL, current alternate links
         # (including ones added through approved candidates) and URLs the user
         # dismissed. Pending candidates are intentionally NOT excluded - they are
@@ -742,9 +826,11 @@ def find_alternate_links(product_id: int) -> dict:
             .all()
         }
 
-        pool: dict = {}  # normalized URL -> [price, method] (keeps the most reliable method)
+        # normalized URL -> [price (product currency), method, original_price, original_currency]
+        pool: dict = {}
 
-        def consider(url: str, price: float, method: str):
+        def consider(url: str, price: float, method: str,
+                     original_price: Optional[float] = None, original_currency: Optional[str] = None):
             host = _host_of(url)
             if not host or _is_same_site(host, main_host) or _is_aggregator(host):
                 return
@@ -752,19 +838,21 @@ def find_alternate_links(product_id: int) -> dict:
             if norm in excluded_urls:
                 return
             if norm not in pool:
-                pool[norm] = [price, method]
+                pool[norm] = [price, method, original_price, original_currency]
                 return
             if METHOD_PRIORITY.get(method, 99) < METHOD_PRIORITY.get(pool[norm][1], 99):
                 pool[norm][1] = method
             if pool[norm][0] is None or price < pool[norm][0]:
                 pool[norm][0] = price
+                pool[norm][2] = original_price
+                pool[norm][3] = original_currency
 
         def has_promising() -> bool:
             """A candidate is worth presenting when it beats the current price
             (any verified one when the product has no price recorded yet)."""
             return any(
-                current_price is None or (p is not None and p < current_price)
-                for p, _m in pool.values()
+                current_price is None or (v[0] is not None and v[0] < current_price)
+                for v in pool.values()
             )
 
         def probe(method: str, query: str, verify_fn, cap: int = MAX_VERIFY_PER_METHOD,
@@ -775,18 +863,26 @@ def find_alternate_links(product_id: int) -> dict:
             search (used by the "keyword" method)."""
             logger.info(f"{product.name}: [{method}] searching {query!r} (suffix '{suffix}')...")
             verified = 0
-            for url in _search_candidates(query, suffix, main_host, quoted=quoted):
+            for url in _search_candidates(query, suffix, main_host, quoted=quoted, market=market):
                 if has_promising() or verified >= cap:
                     break
                 if url.rstrip("/") in pool or url.rstrip("/") in excluded_urls:
                     continue
                 time.sleep(FETCH_DELAY_SECONDS)
-                price = verify_fn(url)
-                if price is None:
+                result = verify_fn(url)
+                if result is None:
+                    continue
+                raw_price, page_currency = result
+                converted = to_product_currency(raw_price, page_currency, url)
+                if converted is None:
                     continue
                 verified += 1
-                consider(url, price, method)
-                logger.info(f"{product.name}: [{method}] verified candidate {url} at {price} {product.currency}")
+                consider(url, converted[0], method, raw_price, converted[1])
+                if converted[1] and currency_code(converted[1]) and currency_code(converted[1]) != prod_ccy:
+                    logger.info(f"{product.name}: [{method}] verified candidate {url} at "
+                                f"{converted[0]} {prod_ccy} (page price {raw_price} {converted[1]})")
+                else:
+                    logger.info(f"{product.name}: [{method}] verified candidate {url} at {converted[0]} {prod_ccy}")
 
         # ── Method 1: globally unique code (EAN/UPC/GTIN/ASIN) ──
         code = _extract_product_code(original_html, product.url)
@@ -803,10 +899,14 @@ def find_alternate_links(product_id: int) -> dict:
                     if url.rstrip("/") in pool or url.rstrip("/") in excluded_urls:
                         continue
                     time.sleep(FETCH_DELAY_SECONDS)
-                    price = _verify_candidate(url, code_value)
-                    if price is None:
+                    result = _verify_candidate(url, code_value)
+                    if result is None:
                         continue
-                    consider(url, price, "code")
+                    raw_price, page_currency = result
+                    converted = to_product_currency(raw_price, page_currency, url)
+                    if converted is None:
+                        continue
+                    consider(url, converted[0], "code", raw_price, converted[1])
             else:
                 probe("code", code_value, lambda url: _verify_candidate(url, code_value))
 
@@ -850,6 +950,7 @@ def find_alternate_links(product_id: int) -> dict:
             "current_price": current_price,
             "candidates_found": new_count,
             "pending_candidates": pending_count,
+            "exchange_rates": source_info(),
             "message": message,
         }
     except Exception as e:
