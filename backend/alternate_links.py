@@ -47,7 +47,7 @@ from bs4 import BeautifulSoup
 
 from database import SessionLocal
 from exchange_rates import currency_code, get_rates, source_info
-from models import Product, LinkCandidate
+from models import Product, LinkCandidate, PendingLinkNotification
 from price_checker import (
     SESSION,
     _fetch_page,
@@ -703,7 +703,7 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
     price are stored (all verified ones when no price was ever recorded), ranked
     by (match-method reliability, price), capped at ALTERNATE_LINKS_MAX. Already
     dismissed URLs are never resuggested; pending rows get a price refresh.
-    Returns (new_count, pending_count).
+    Returns (new_candidate_ids, pending_count).
     """
     max_links = _max_links()
     ranked = sorted(
@@ -727,7 +727,7 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
         .all()
     }
 
-    new_count = 0
+    new_rows: List[LinkCandidate] = []
     for url, price, method, original_price, original_currency in to_store:
         if url in dismissed_urls:
             continue
@@ -735,9 +735,10 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
             LinkCandidate.product_id == product.id, LinkCandidate.url == url
         ).first()
         if row is None:
-            db.add(LinkCandidate(product_id=product.id, url=url, price=price, match_method=method, status="pending",
-                                 original_price=original_price, price_currency=original_currency))
-            new_count += 1
+            row = LinkCandidate(product_id=product.id, url=url, price=price, match_method=method, status="pending",
+                                original_price=original_price, price_currency=original_currency)
+            db.add(row)
+            new_rows.append(row)
             _log_candidate(product.name, method, url, price, product.currency, original_price, original_currency)
         elif row.status == "pending":
             row.price = price
@@ -752,7 +753,7 @@ def _save_candidates(db, product: Product, pool: dict, current_price: Optional[f
     pending_count = db.query(LinkCandidate).filter(
         LinkCandidate.product_id == product.id, LinkCandidate.status == "pending"
     ).count()
-    return new_count, pending_count
+    return [row.id for row in new_rows], pending_count
 
 
 def find_alternate_links(product_id: int) -> dict:
@@ -934,7 +935,8 @@ def find_alternate_links(product_id: int) -> dict:
                     probe("keyword", product_name,
                           lambda url: _verify_name_candidate(url, product_name), quoted=False)
 
-        new_count, pending_count = _save_candidates(db, product, pool, current_price)
+        new_candidate_ids, pending_count = _save_candidates(db, product, pool, current_price)
+        new_count = len(new_candidate_ids)
 
         if new_count:
             message = f"Found {new_count} new candidate link(s) - review them on the product page"
@@ -949,6 +951,7 @@ def find_alternate_links(product_id: int) -> dict:
             "domain_suffix": suffix,
             "current_price": current_price,
             "candidates_found": new_count,
+            "new_candidate_ids": new_candidate_ids,
             "pending_candidates": pending_count,
             "exchange_rates": source_info(),
             "message": message,
@@ -956,6 +959,59 @@ def find_alternate_links(product_id: int) -> dict:
     except Exception as e:
         logger.error(f"Alternate-link discovery failed for product {product_id}: {e}")
         return {"success": False, "message": str(e)}
+    finally:
+        db.close()
+
+
+def register_pending_link_notification(product_id: int, new_candidate_ids: List[int]):
+    """Register the "N new alternate links found" notification for the next price-check run.
+
+    The scheduled discovery runs overnight, so nothing is sent from here: a
+    PendingLinkNotification row is created (or merged into an already-pending one
+    for the same product, when several discovery runs pass before the next check)
+    and the first PRICE_CHECK_TIMES job afterwards delivers it via Telegram and
+    deletes the row (see scheduler._flush_pending_link_notifications).
+    """
+    if not new_candidate_ids:
+        return
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return
+        existing = (
+            db.query(PendingLinkNotification)
+            .filter(
+                PendingLinkNotification.user_id == product.user_id,
+                PendingLinkNotification.product_id == product_id,
+            )
+            .first()
+        )
+        if existing:
+            try:
+                ids = json.loads(existing.candidate_ids or "[]")
+            except (json.JSONDecodeError, TypeError):
+                ids = []
+            ids = [i for i in ids if isinstance(i, int)]
+            for candidate_id in new_candidate_ids:
+                if candidate_id not in ids:
+                    ids.append(candidate_id)
+            existing.candidate_ids = json.dumps(ids)
+        else:
+            existing = PendingLinkNotification(
+                user_id=product.user_id,
+                product_id=product_id,
+                candidate_ids=json.dumps(list(new_candidate_ids)),
+            )
+            db.add(existing)
+        db.commit()
+        logger.info(
+            f"{product.name}: {len(new_candidate_ids)} new candidate link(s) registered "
+            f"for the next Telegram notification (delivered by the next scheduled price check)"
+        )
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to register pending link notification for product {product_id}: {e}")
     finally:
         db.close()
 
@@ -980,6 +1036,11 @@ def scheduled_alternate_discovery():
     for product_id, name in targets:
         try:
             summary = find_alternate_links(product_id)
+            new_ids = summary.get("new_candidate_ids") or []
+            if summary.get("success") and new_ids:
+                # Runs overnight: register the Telegram notification, delivered by the
+                # first scheduled price check afterwards (never at this time).
+                register_pending_link_notification(product_id, new_ids)
             results.append({
                 "product_id": product_id,
                 "name": name,

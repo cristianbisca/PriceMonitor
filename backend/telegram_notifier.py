@@ -5,6 +5,7 @@ Telegram notification service for price alerts.
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -261,6 +262,61 @@ def send_first_price_notification(
         f"✅ <b>First Price Recorded</b>\n\n"
         f"📦 <b>{product_name}</b>\n"
         f"💰 Current price: <b>{price:,.2f} {currency}</b>\n\n"
+        f"<a href='{product_url}'>View Product</a>"
+    )
+
+    return send_message(target_chat, message)
+
+
+def _store_domain(url: str) -> str:
+    """Store label for a URL (netloc without www. and port), e.g. 'https://www.emag.ro/x' -> 'emag.ro'."""
+    try:
+        host = (urlparse(url).netloc or "").lower().split(":")[0]
+    except Exception:
+        return url
+    if host.startswith("www."):
+        host = host[4:]
+    return host or url
+
+
+def send_new_alternate_links_notification(
+    product_name: str,
+    product_url: str,
+    candidates: list,
+    chat_id: Optional[str] = None,
+) -> bool:
+    """Send notification when discovery found new cheaper alternate links.
+
+    candidates: list of dicts with url, price (in the product's currency, may be
+    None), currency, and optional savings / original_price / price_currency (the
+    page's own price for foreign-currency stores).
+    """
+    target_chat = chat_id or TELEGRAM_CHAT_ID
+    if not target_chat:
+        return False
+    if not candidates:
+        return False
+
+    lines = []
+    for candidate in candidates:
+        domain = _store_domain(candidate.get("url") or "")
+        currency = candidate.get("currency") or ""
+        if candidate.get("price") is None:
+            lines.append(f"• <a href='{candidate.get('url') or ''}'>{domain}</a> — price not found")
+            continue
+        line = f"• <a href='{candidate.get('url') or ''}'>{domain}</a> — <b>{candidate['price']:,.2f} {currency}</b>"
+        if candidate.get("savings") is not None:
+            line += f" (saves <b>{candidate['savings']:,.2f} {currency}</b>)"
+        if candidate.get("original_price") is not None and candidate.get("price_currency"):
+            line += f" (page: {candidate['original_price']:,.2f} {candidate['price_currency']})"
+        lines.append(line)
+
+    message = (
+        f"🔗 <b>New Links Found</b>\n\n"
+        f"📦 <b>{product_name}</b>\n"
+        f"Found {len(candidates)} cheaper link(s) at other stores:\n\n"
+        + "\n".join(lines)
+        + "\n\nReview them in the app (approve or dismiss).\n"
         f"<a href='{product_url}'>View Product</a>"
     )
 

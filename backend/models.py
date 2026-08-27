@@ -107,6 +107,23 @@ class LinkCandidate(Base):
     )
 
 
+class PendingLinkNotification(Base):
+    """A deferred "new alternate links found" notification awaiting Telegram delivery.
+
+    The scheduled discovery job (ALTERNATE_LINK_TIMES) runs overnight, so newly
+    found candidates are not announced at discovery time: a row is registered here
+    and the first PRICE_CHECK_TIMES run afterwards delivers it to the product
+    owner's chat, then deletes the row (a failed send keeps it for the next run).
+    """
+    __tablename__ = "pending_link_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+    candidate_ids = Column(Text, nullable=False)  # JSON list of LinkCandidate ids (merged across overnight runs)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class TelegramNotification(Base):
     """Tracks notification history to avoid duplicates."""
     __tablename__ = "telegram_notifications"

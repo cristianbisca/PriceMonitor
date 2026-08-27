@@ -58,7 +58,8 @@ def main():
         "https://z.example/4": [91.0, "name"],
         "https://z.example/5": [150.0, "code"],  # not cheaper than 100 -> skipped
     }
-    new_count, pending_count = _save_candidates(s, p, pool, 100.0)
+    new_ids, pending_count = _save_candidates(s, p, pool, 100.0)
+    new_count = len(new_ids)
     rows = pending_rows(s, p)
     # ranked: code z1, model z3, name z4 (91), name z2 (95); capped at MAX (3)
     assert new_count == MAX, new_count
@@ -79,8 +80,8 @@ def main():
         "https://z.example/2": [95.0, "name"],   # new row (was dropped by cap last run)
         "https://z.example/3": [92.0, "model"],
     }
-    new_count, pending_count = _save_candidates(s, p, pool2, 100.0)
-    assert new_count == 1, new_count          # only z2 is new
+    new_ids, pending_count = _save_candidates(s, p, pool2, 100.0)
+    assert len(new_ids) == 1, new_ids        # only z2 is new
     rows = pending_rows(s, p)
     assert rows["https://z.example/1"] == (85.0, "code"), rows   # price refreshed, method upgraded-only
     assert rows["https://z.example/2"] == (95.0, "name")
@@ -120,10 +121,10 @@ def main():
         "https://a.example/3": [70.0, "model"],
         "https://a.example/4": [60.0, "name"],
     }
-    new_count, pending_count = _save_candidates(s, p, pool4, None)
+    new_ids, pending_count = _save_candidates(s, p, pool4, None)
     rows = pending_rows(s, p)
     assert set(rows) == {f"https://a.example/{i}" for i in (2, 3, 4)}, rows
-    assert new_count == 3 and pending_count == 3
+    assert len(new_ids) == 3 and pending_count == 3
     s.close()
 
     # ── 5) 4-element pool values keep the original (pre-conversion) price ──
@@ -134,8 +135,8 @@ def main():
         "https://fx.example/eu": [139.75, "code", 27.95, "EUR"],
         "https://fx.example/local": [90.0, "name"],  # 2-element value (pre-conversion entries)
     }
-    new_count, pending_count = _save_candidates(s, p, pool5, 289.0)
-    assert new_count == 2, new_count
+    new_ids, pending_count = _save_candidates(s, p, pool5, 289.0)
+    assert len(new_ids) == 2, new_ids
     row_eu = s.query(LinkCandidate).filter(LinkCandidate.url == "https://fx.example/eu").first()
     row_local = s.query(LinkCandidate).filter(LinkCandidate.url == "https://fx.example/local").first()
     assert row_eu.price == 139.75 and row_eu.original_price == 27.95, (row_eu.price, row_eu.original_price)

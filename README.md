@@ -153,11 +153,12 @@ Sources that price in a different currency are **converted to the product's curr
 
 ### Notification Types
 
-All alerts are based on the current price (cheapest source at the last check):
+The price alerts are based on the current price (cheapest source at the last check):
 
 - **🔻 Price Drop Alert** — Sent when the current price is lower than the current price from the previous check
 - **🎉 NEW MINIMUM PRICE!** — Sent when the current price is a new all-time low
 - **✅ First Price Recorded** — Sent on the first successful check for a new product
+- **🔗 New Links Found** — Sent on the *next* scheduled price check (not at discovery time, which runs overnight) when the automatic alternate-link discovery finds cheaper links at other stores; lists each new link with its store and price. You review them in the app (approve or dismiss)
 
 ## 📦 Backup & Restore (Dropbox)
 
@@ -370,7 +371,7 @@ For methods 1 and 3, only results from **other stores with the same country doma
 
 **How to trigger it:**
 - **Manually** — "🔎 Find Links" button on the product detail page (`POST /api/products/{id}/find-alternates`).
-- **On a schedule** — set `ALTERNATE_LINK_TIMES` (e.g. `02:00`); it runs for every enabled product where the per-product **"Auto find alternate links"** toggle is on (on by default).
+- **On a schedule** — set `ALTERNATE_LINK_TIMES` (e.g. `02:00`); it runs for every enabled product where the per-product **"Auto find alternate links"** toggle is on (on by default). Since scheduled runs usually happen overnight, newly found links are announced with a **🔗 New Links Found** Telegram notification on the *next* scheduled price check (not at discovery time) — manual runs never send one.
 
 > Discovery makes several real web requests per product and can take a couple of minutes — that's expected.
 

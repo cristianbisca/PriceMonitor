@@ -3,6 +3,7 @@ Scheduler service for periodic price checks.
 Uses APScheduler to run price checks at configured times.
 """
 
+import json
 import logging
 import os
 from typing import List
@@ -11,15 +12,16 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from database import SessionLocal
-from models import Product, PriceEntry, User
+from models import Product, PriceEntry, User, LinkCandidate, PendingLinkNotification
 from alternate_links import scheduled_alternate_discovery
 from backup import perform_backup
-from price_checker import check_product_price, run_all_price_checks
+from price_checker import check_product_price, run_all_price_checks, get_current_price
 from telegram_notifier import (
     is_configured,
     send_price_drop_notification,
     send_new_minimum_notification,
     send_first_price_notification,
+    send_new_alternate_links_notification,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,6 +152,100 @@ def _send_notifications_for_product(product_id: int):
         db.close()
 
 
+def _send_pending_link_notification(product_id: int, raw_candidate_ids: str) -> bool:
+    """Deliver one registered "new alternate links found" notification.
+
+    Returns True when the row may be dropped (delivered, or nothing left to deliver
+    because the user already approved/dismissed the links or has no chat IDs), and
+    False when the send failed (the row stays pending for the next price-check run).
+    """
+    db = SessionLocal()
+    try:
+        product = db.query(Product).filter(Product.id == product_id).first()
+        if not product:
+            return True
+
+        try:
+            ids = json.loads(raw_candidate_ids) if raw_candidate_ids else []
+        except (json.JSONDecodeError, TypeError):
+            ids = []
+        candidate_ids = [i for i in (ids if isinstance(ids, list) else []) if isinstance(i, int)]
+        candidates = []
+        if candidate_ids:
+            candidates = [
+                c for c in db.query(LinkCandidate).filter(LinkCandidate.id.in_(candidate_ids)).all()
+                if c.status == "pending"
+            ]
+        if not candidates:
+            logger.info(f"Pending link notification for product {product_id} dropped: no candidates still pending")
+            return True
+
+        chat_ids = _get_user_chat_ids_for_product(product_id)
+        if not chat_ids:
+            logger.info(f"Pending link notification for product {product_id} dropped: no Telegram chat IDs")
+            return True
+
+        current_price = get_current_price(db, product_id)
+        payload = []
+        for candidate in sorted(candidates, key=lambda c: (c.price is None, c.price if c.price is not None else 0)):
+            savings = None
+            if current_price is not None and candidate.price is not None and current_price > candidate.price:
+                savings = round(current_price - candidate.price, 2)
+            payload.append({
+                "url": candidate.url,
+                "price": candidate.price,
+                "currency": product.currency,
+                "savings": savings,
+                "original_price": candidate.original_price,
+                "price_currency": candidate.price_currency,
+            })
+
+        delivered = False
+        for chat_id in chat_ids:
+            try:
+                if send_new_alternate_links_notification(
+                    product_name=product.name,
+                    product_url=product.url,
+                    candidates=payload,
+                    chat_id=chat_id,
+                ):
+                    delivered = True
+            except Exception as e:
+                logger.error(f"Error sending new-links notification for product {product_id}: {e}")
+        return delivered
+    finally:
+        db.close()
+
+
+def _flush_pending_link_notifications():
+    """Deliver deferred "new alternate links found" notifications.
+
+    Called at the end of every scheduled price check: the overnight discovery job
+    registers rows (never sends), so only the first price-check run after
+    registration has anything to deliver. Delivered rows are deleted — later runs
+    the same day are no-ops. Rows whose send failed stay pending and are retried
+    on the next run.
+    """
+    db = SessionLocal()
+    try:
+        pending = db.query(PendingLinkNotification).order_by(PendingLinkNotification.id.asc()).all()
+        notes = [(n.id, n.product_id, n.candidate_ids) for n in pending]
+    finally:
+        db.close()
+
+    for note_id, product_id, raw_ids in notes:
+        try:
+            if _send_pending_link_notification(product_id, raw_ids):
+                db = SessionLocal()
+                try:
+                    db.query(PendingLinkNotification).filter(PendingLinkNotification.id == note_id).delete()
+                    db.commit()
+                finally:
+                    db.close()
+        except Exception as e:
+            logger.error(f"Error flushing pending link notification {note_id} (product {product_id}): {e}")
+
+
 def scheduled_price_check():
     """Scheduled job that checks all enabled products for ALL users and sends notifications.
     
@@ -180,6 +276,11 @@ def scheduled_price_check():
         if result["success"]:
             # Trigger notification for this product (based on the cycle-min current price)
             _send_notifications_for_product(result["product_id"])
+
+    # Deliver the "new alternate links found" notifications registered by the
+    # overnight discovery job (no-op when the previous price-check run already
+    # delivered them).
+    _flush_pending_link_notifications()
 
     logger.info(f"=== Price check completed. Results: {results} ===")
 
