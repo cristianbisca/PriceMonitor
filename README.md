@@ -183,9 +183,9 @@ The whole database is backed up to Dropbox on a schedule and on demand, so the e
 ### How Backups Work
 
 - A **consistent snapshot** of the SQLite database is written to `data/backups/pm_backup_YYYY-MM-DD_HHMMSS.sqlite` (next to the DB file, on the Docker volume) and uploaded to `BACKUP_DROPBOX_FOLDER` in Dropbox, overwriting any file with the same name.
-- The scheduled backup runs per `BACKUP_SCHEDULE` (cron expression, default daily at 02:00, server `TZ`); manual backups can be triggered at any time from **Settings → Database Backup & Restore → "Backup Now"** in the web UI (or `POST /api/backup/run`).
+- The scheduled backup runs per `BACKUP_SCHEDULE` (cron expression, default daily at 02:00, server `TZ`); manual backups can be triggered at any time with `POST /api/backup/run`. Backup/restore is configured entirely via the container env settings — there is no in-app settings section for it.
 - Backups older than `BACKUP_RETENTION_DAYS` (default 30) are automatically deleted from both Dropbox and the local `backups/` folder after each run.
-- If Dropbox isn't configured, backups are still created locally — the UI and logs say "local only".
+- If Dropbox isn't configured, backups are still created locally — the API response and logs say "local only".
 
 ### Restoring a Backup
 
@@ -365,7 +365,7 @@ Four matching methods are tried in order of reliability, and discovery stops as 
 3. **Product name** — a cleaned, store-brand-free product title from JSON-LD / meta tags / `<h1>`, web-searched as an **exact phrase**; the candidate page's name must be the same product (token recall / string similarity, with rejection of accessory names, different model tiers — e.g. a "Pro Max" for a plain model — and capacity mismatches, e.g. a 2x8GB kit for a 16GB single stick).
 4. **Title keywords** — only if method 3 found nothing: the same title is searched **unquoted** (Google-style keywords), which catches stores that phrase the product differently. Every hit still has to pass the same name-match gate as method 3, so the looser search doesn't let in unrelated products.
 
-For methods 1 and 3, only results from **other stores with the same country domain suffix** are kept (e.g. a `.ro` product only finds other `.ro` sites) and price-comparison aggregators (price.ro, compari.ro, idealo, …) are never kept. Every candidate page is fetched and its price extracted (only candidates cheaper than the current price are suggested; up to `ALTERNATE_LINKS_MAX` at a time).
+For methods 1 and 3, only results from **other stores with the same country domain suffix** are kept (e.g. a `.ro` product only finds other `.ro` sites) and price-comparison aggregators (price.ro, compari.ro, idealo, …) are never kept. Every candidate page is fetched and its price extracted. Pages that are out of stock or delisted (e.g. "Lipsă din stoc", "Indisponibil", "Produsul nu mai face parte din oferta") are rejected outright. Only candidates cheaper than the current price are suggested (up to `ALTERNATE_LINKS_MAX` at a time).
 
 **Cross-currency:** web searches carry the original site's country as a hint, and candidate pages priced in a different currency (e.g. an EUR shop) are converted into the product's currency with the same free exchange rates as the price checks (see above). The suggested price shown is the converted one, with the original page price kept underneath (e.g. "page price 27,95 EUR"). A candidate whose price can't be converted is skipped rather than compared blindly.
 

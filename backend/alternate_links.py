@@ -23,6 +23,9 @@ All methods are restricted to domains with the same country suffix (e.g. a
 .ro original -> only other .ro sites) and never consider the same store or
 price-comparison aggregators (price.ro, compari.ro, idealo.de, ...) because
 their pages list offers from many stores rather than being a shop to monitor.
+Candidate pages that turn out to be out of stock or delisted (banner text such as
+"Lipsă din stoc", "Indisponibil", "Produsul nu mai face parte din oferta ...") are
+rejected outright: a delisted product is not a shop worth monitoring.
 
 Verified candidates that are cheaper than the product's current price are NOT
 attached to the product automatically. They are stored in LinkCandidate with
@@ -110,6 +113,17 @@ _CAPACITY_TOKEN_RE = re.compile(r"\d+(?:x\d+)?" + _CAPACITY_UNITS + r"$")
 # candidate introduces is checked, so a product genuinely named "Pro" still
 # matches another "Pro" listing. ("plus" is already a name stopword.)
 VARIANT_WORDS = {"pro", "max", "ultra", "se", "mini", "lite"}
+# Phrases (already normalized: lowercase, no diacritics) that mark a candidate
+# page as out of stock or delisted. Out-of-stock listings are rejected: they are
+# not a shop a user wants to monitor, and the price shown is usually stale.
+OUT_OF_STOCK_PHRASES = (
+    "lipsa stoc",
+    "lipsa din stoc",
+    "nu este in stoc",
+    "stoc indisponibil",
+    "indisponibil",
+    "nu mai face parte din oferta",
+)
 
 _BING_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -478,6 +492,31 @@ def _asin_candidates(asin: str, suffix: str) -> List[str]:
     return [f"https://amazon.{tld}/dp/{asin}"]
 
 
+def _fold_diacritics(text: str) -> str:
+    """Map Romanian diacritics to their base letters so phrase matching is
+    diacritic-insensitive ('în stoc' -> 'in stoc', 'lipsă' -> 'lipsa')."""
+    return (
+        text.replace("ă", "a").replace("â", "a").replace("î", "i")
+             .replace("ș", "s").replace("ş", "s")
+             .replace("ț", "t").replace("ţ", "t")
+    )
+
+
+def _is_out_of_stock(html: str) -> bool:
+    """True when a candidate page is an out-of-stock / delisted listing.
+
+    Stores render this as banner text ("Lipsă din stoc", "Produsul nu mai face
+    parte din oferta noastră", "Indisponibil", ...). HTML tags are replaced with
+    spaces and Romanian diacritics are folded before matching, so the phrases
+    match regardless of markup or ă/â/î/ș/ț spelling.
+    """
+    if not html:
+        return False
+    text = re.sub(r"<[^>]+>", " ", html)
+    text = _fold_diacritics(re.sub(r"\s+", " ", text).lower())
+    return any(phrase in text for phrase in OUT_OF_STOCK_PHRASES)
+
+
 def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Optional[Tuple[float, Optional[str]]]:
     """Fetch a candidate page; return (price, currency) only if the exact product
     code is present in the URL or the HTML (same-product proof) and a price is
@@ -490,6 +529,9 @@ def _verify_candidate(url: str, code: str, case_insensitive: bool = False) -> Op
         html = _fetch_page(url)
     except Exception as e:
         logger.debug(f"Could not fetch candidate {url}: {e}")
+        return None
+    if _is_out_of_stock(html):
+        logger.info(f"Candidate {url} rejected: page is out of stock")
         return None
     if case_insensitive:
         present = code.lower() in url.lower() or code.lower() in (html or "").lower()
@@ -662,6 +704,9 @@ def _verify_name_candidate(url: str, original_name: str) -> Optional[Tuple[float
         html = _fetch_page(url)
     except Exception as e:
         logger.debug(f"Could not fetch candidate {url}: {e}")
+        return None
+    if _is_out_of_stock(html):
+        logger.info(f"Candidate {url} rejected: page is out of stock")
         return None
     page_name = _extract_product_name(BeautifulSoup(html, "html.parser"))
     if not page_name or not _names_match(original_name, page_name):
