@@ -90,6 +90,7 @@ python main.py
 | `PRICE_CHECK_TIMES` | `09:00,14:00` | Comma-separated check times in 24h format |
 | `ALTERNATE_LINK_TIMES` | *(empty = disabled)* | Comma-separated 24h times for automatic alternate-link discovery |
 | `ALTERNATE_LINKS_MAX` | `3` | Max candidate (suggested) links per product (min 1) |
+| `PRICE_DROP_MIN` | `10` | Minimum drop (in the product's currency) that triggers a price-drop notification |
 | `FX_RATE_TTL_HOURS` | `12` | Hours before a fresh exchange-rate fetch (free ECB/frankfurter + open.er-api, no API key) |
 | `FX_RATE_MAX_STALE_HOURS` | `168` | Max age of a cached rate table still used as fallback when a fresh fetch fails |
 | `PORT` | `3000`* | HTTP server port (in-container; exposed as `13020` via compose) |

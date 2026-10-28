@@ -29,6 +29,15 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(timezone=os.getenv("TZ", "Europe/Bucharest"))
 
 
+def _price_drop_threshold() -> float:
+    """Minimum drop (in the product's currency) worth notifying about (PRICE_DROP_MIN env)."""
+    try:
+        return float(os.getenv("PRICE_DROP_MIN", "10"))
+    except ValueError:
+        logger.error(f"Invalid PRICE_DROP_MIN '{os.getenv('PRICE_DROP_MIN')}', using 10")
+        return 10.0
+
+
 def _get_user_chat_ids_for_product(product_id: int) -> List[str]:
     """Get Telegram chat IDs for users who have this product and notifications enabled.
 
@@ -67,7 +76,9 @@ def _send_notifications_for_product(product_id: int):
     - **New minimum**: current price < minimum over all previously recorded entries
       (all-time minimum, i.e. the min of the per-check minimums)
     - **Price drop**: current price < the previous check cycle's current price
-      (and it is not a new all-time minimum)
+      (and it is not a new all-time minimum) — only when the drop is at least
+      ``PRICE_DROP_MIN`` (default 10) in the product's currency, to skip
+      meaningless savings
     """
     if not is_configured():
         logger.info("Telegram not configured, skipping notification")
@@ -136,6 +147,13 @@ def _send_notifications_for_product(product_id: int):
         prev_cycle = max(prev_cycles)
         prev_current = min(e.price for e in prev_entries if e.check_cycle == prev_cycle)
         if current_price < prev_current:
+            drop_amount = prev_current - current_price
+            if drop_amount < _price_drop_threshold():
+                logger.info(
+                    f"Price drop for product {product_id} is only {drop_amount:.2f} "
+                    f"{product.currency} (< {_price_drop_threshold():.2f}) - no notification"
+                )
+                return
             for chat_id in chat_ids:
                 send_price_drop_notification(
                     product_name=product.name,

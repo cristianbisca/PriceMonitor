@@ -197,7 +197,7 @@ Finds other stores in the same country selling the **same product** and stores t
 Called once per successfully-checked product (from `scheduled_price_check`). Everything is based on the **current price** = `MIN(price)` of the latest `check_cycle` (cheapest source at the last check). It loads all entries, finds the latest `check_cycle`, and splits rows into this cycle vs. everything before it:
 - **First price** (no entries recorded before this cycle) → `send_first_price_notification` (price = current price)
 - **New minimum** (current price < min over all previously recorded rows, i.e. a new all-time low) → `send_new_minimum_notification` (old min = previous all-time minimum)
-- **Price drop** (current price < the previous check cycle's current price, and not a new minimum) → `send_price_drop_notification` (old price = previous cycle's current price)
+- **Price drop** (current price < the previous check cycle's current price, and not a new minimum) → `send_price_drop_notification` (old price = previous cycle's current price) — but **only when the drop is at least `PRICE_DROP_MIN`** (env, default `10`, in the product's currency); smaller drops are logged and suppressed as meaningless savings. New-minimum and first-price notifications are unaffected.
 
 Rows with NULL `check_cycle` (legacy) are treated as "before" but, without cycle stamps to compare a previous current price from, only suppress the drop case.
 
